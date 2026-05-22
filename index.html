@@ -6,8 +6,6 @@
   <meta name="theme-color" content="#111111" />
   <title>Folk Fawn</title>
   <link rel="stylesheet" href="styles.css" />
-  <link rel="manifest" href="manifest.json">
-  <link rel="icon" type="image/x-icon" href="/img/icon.png">
 </head>
 <body>
   <div id="appShell" class="app-shell">
@@ -134,7 +132,7 @@
 
         <div class="slider-block">
           <div class="slider-labels"><span>Volume</span><span id="volReadout">80%</span></div>
-          <input id="volumeSlider" type="range" min="0" max="50" value="40" />
+          <input id="volumeSlider" type="range" min="0" max="35" value="25" />
         </div>
 
         <details class="dropdown-block" id="upNextBlock">
@@ -177,7 +175,7 @@
       </div>
     </section>
 
-    <audio id="audio" preload="metadata"></audio>
+    <audio id="audio" preload="metadata" playsinline webkit-playsinline></audio>
   </div>
 
   <script src="app.js"></script>
