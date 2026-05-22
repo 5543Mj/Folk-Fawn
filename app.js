@@ -20,6 +20,7 @@
     autoNormalize: true,
     audioReady: false,
     currentQueueMode: 'songs',
+    directAudioMode: false,
   };
 
   const els = {
@@ -83,6 +84,8 @@
   };
 
   const dbPromise = openDB();
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  state.directAudioMode = isIOS;
   let audioCtx = null;
   let mediaSource = null;
   let gainNode = null;
@@ -549,6 +552,7 @@
     els.lyricsText.textContent = track.lyrics?.trim() || 'No embedded lyrics found.';
     updateLoopButton();
     updateTimeUi();
+    renderQueue();
   }
 
   function updateLoopButton() {
@@ -748,6 +752,10 @@
     currentObjectUrl = url;
     els.audio.src = url;
     els.audio.currentTime = 0;
+    syncAudioVolume();
+    if (audioCtx && audioCtx.state === 'suspended' && !state.directAudioMode) {
+      try { await audioCtx.resume(); } catch (err) { console.warn(err); }
+    }
     try {
       await els.audio.play();
     } catch (err) {
@@ -761,24 +769,28 @@
     renderQueue();
   }
 
+
   async function playTrackById(trackId) {
     if (!trackId) return;
     const idx = state.queue.indexOf(trackId);
     if (idx >= 0) {
       state.currentIndex = idx;
       state.currentTrackId = trackId;
-      await startPlayback();
-      return;
+    } else {
+      const track = findTrack(trackId);
+      if (!track) return;
+      state.queue = [trackId];
+      state.currentIndex = 0;
+      state.currentTrackId = trackId;
+      state.currentQueueMode = 'songs';
+      state.currentAlbumId = track.albumId || null;
     }
-    const track = findTrack(trackId);
-    if (!track) return;
-    state.queue = [trackId];
-    state.currentIndex = 0;
-    state.currentTrackId = trackId;
-    state.currentQueueMode = 'songs';
-    state.currentAlbumId = track.albumId || null;
+    openPlayer();
+    renderMiniPlayer();
+    renderQueue();
     await startPlayback();
   }
+
 
 
   async function removeTrackFromLibrary(id) {
@@ -813,6 +825,7 @@
   }
 
   async function ensureAudioGraph() {
+    if (state.directAudioMode) return;
     if (state.audioReady) return;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     mediaSource = audioCtx.createMediaElementSource(els.audio);
@@ -850,13 +863,24 @@
     applyEQ();
   }
 
-  function updateMasterGain() {
-    if (!gainNode) return;
+  function syncAudioVolume() {
     const track = findTrack(state.currentTrackId);
     const norm = state.autoNormalize && track?.normGain ? Number(track.normGain) : 1;
     const vol = Number(els.volumeSlider.value) / 100;
-    gainNode.gain.value = clamp(vol * norm, 0, 0.5);
-    els.volReadout.textContent = `${Math.round(vol * 200)}%${state.autoNormalize && norm !== 1 ? ` · EQ ${norm.toFixed(2)}×` : ''}`;
+    const output = clamp(vol * norm, 0, 0.35);
+    if (state.directAudioMode || !gainNode) {
+      els.audio.volume = output;
+    }
+    els.volReadout.textContent = `${Math.round(vol * 100)}%${state.autoNormalize && norm !== 1 ? ` · EQ ${norm.toFixed(2)}×` : ''}`;
+    return output;
+  }
+
+  function updateMasterGain() {
+    const output = syncAudioVolume();
+    if (!gainNode) return;
+    if (!state.directAudioMode) {
+      gainNode.gain.value = output;
+    }
   }
 
   function applyEQ() {
@@ -1041,7 +1065,7 @@
 
   function computeNormalizationGain(audioBuffer) {
     try {
-      const targetPeak = 0.72;
+      const targetPeak = 0.58;
       let peak = 0;
       let rmsSum = 0;
       let sampleCount = 0;
@@ -1060,7 +1084,7 @@
       const rms = Math.sqrt(rmsSum / sampleCount);
       const peakGain = targetPeak / peak;
       const rmsGain = rms > 0 ? 0.18 / rms : 1;
-      return clamp(Math.min(peakGain, rmsGain), 0.75, 1.05);
+      return clamp(Math.min(peakGain, rmsGain), 0.65, 0.9);
     } catch {
       return 1;
     }
@@ -1122,6 +1146,27 @@
       return '';
     }
   }
+  function decodeApicV22(frame) {
+    try {
+      const bytes = new Uint8Array(frame);
+      const encoding = bytes[0];
+      let i = 1;
+      const mime = String.fromCharCode(bytes[i], bytes[i + 1], bytes[i + 2]).replace(/ +$/, '') || 'image/jpeg';
+      i += 3;
+      i += 1; // picture type
+      if (encoding === 0 || encoding === 3) {
+        while (i < bytes.length && bytes[i] !== 0) i += 1;
+        i += 1;
+      } else {
+        while (i + 1 < bytes.length && !(bytes[i] === 0 && bytes[i + 1] === 0)) i += 2;
+        i += 2;
+      }
+      const image = bytes.slice(i);
+      return `data:${mime};base64,${bytesToBase64(image)}`;
+    } catch {
+      return '';
+    }
+  }
 
   function parseID3(buffer) {
     const view = new DataView(buffer);
@@ -1136,31 +1181,41 @@
     const frames = { title: '', artist: '', album: '', year: '', trackNumber: 0 };
     let coverDataUrl = '';
     let lyrics = '';
+    const frameLen = version === 2 ? 6 : 10;
+    const textFrameIds = new Set(['TIT2', 'TT2', 'TPE1', 'TP1', 'TALB', 'TAL', 'TPE2', 'TP2', 'TRCK', 'TRK', 'TYER', 'TYE', 'TDRC']);
 
-    while (offset + 10 <= end) {
-      const id = String.fromCharCode(...new Uint8Array(buffer, offset, 4));
-      if (!/^[A-Z0-9]{4}$/.test(id) || id === '\u0000\u0000\u0000\u0000') break;
-      const frameSize = version === 4
-        ? syncSafeToInt(view.getUint8(offset + 4), view.getUint8(offset + 5), view.getUint8(offset + 6), view.getUint8(offset + 7))
-        : view.getUint32(offset + 4, false);
+    while (offset + frameLen <= end) {
+      const idBytes = new Uint8Array(buffer, offset, version === 2 ? 3 : 4);
+      const id = String.fromCharCode(...idBytes);
+      if (!/^[A-Z0-9]{3,4}$/.test(id) || id.replace(/ /g, '') === '') break;
+
+      let frameSize = 0;
+      let dataStart = offset + frameLen;
+      if (version === 2) {
+        frameSize = (view.getUint8(offset + 3) << 16) | (view.getUint8(offset + 4) << 8) | view.getUint8(offset + 5);
+      } else if (version === 4) {
+        frameSize = syncSafeToInt(view.getUint8(offset + 4), view.getUint8(offset + 5), view.getUint8(offset + 6), view.getUint8(offset + 7));
+      } else {
+        frameSize = view.getUint32(offset + 4, false);
+      }
       if (frameSize <= 0) break;
-      const dataStart = offset + 10;
       const dataEnd = dataStart + frameSize;
       const frame = buffer.slice(dataStart, dataEnd);
 
-      if (['TIT2', 'TPE1', 'TALB', 'TRCK', 'TYER', 'TDRC'].includes(id)) {
+      if (textFrameIds.has(id)) {
         const bytes = new Uint8Array(frame);
         const encoding = bytes[0];
         const text = decodeTextBytes(bytes.slice(1), encoding);
-        if (id === 'TIT2') frames.title = text;
-        if (id === 'TPE1') frames.artist = text;
-        if (id === 'TALB') frames.album = text;
-        if (id === 'TRCK') frames.trackNumber = parseInt(text.split('/')[0], 10) || 0;
-        if (id === 'TYER' || id === 'TDRC') frames.year = String(text).slice(0, 4);
-      } else if (id === 'USLT' && !lyrics) {
+        if (id === 'TIT2' || id === 'TT2') frames.title = text;
+        if (id === 'TPE1' || id === 'TP1') frames.artist = text;
+        if (id === 'TALB' || id === 'TAL') frames.album = text;
+        if (id === 'TPE2' || id === 'TP2') frames.artist = frames.artist || text;
+        if (id === 'TRCK' || id === 'TRK') frames.trackNumber = parseInt(text.split('/')[0], 10) || 0;
+        if (id === 'TYER' || id === 'TYE' || id === 'TDRC') frames.year = String(text).slice(0, 4);
+      } else if ((id === 'USLT' || id === 'ULT') && !lyrics) {
         const bytes = new Uint8Array(frame);
         const encoding = bytes[0];
-        let pos = 1 + 3; // skip language code like eng
+        let pos = 1 + (version === 2 ? 0 : 3);
         if (encoding === 0 || encoding === 3) {
           while (pos < bytes.length && bytes[pos] !== 0) pos += 1;
           pos += 1;
@@ -1170,8 +1225,8 @@
         }
         const lyricBytes = bytes.slice(pos);
         lyrics = decodeTextBytes(lyricBytes, encoding, true).replace(/\r\n?/g, '\n');
-      } else if (id === 'APIC' && !coverDataUrl) {
-        const pic = decodeApic(frame);
+      } else if ((id === 'APIC' || id === 'PIC') && !coverDataUrl) {
+        const pic = id === 'PIC' ? decodeApicV22(frame) : decodeApic(frame);
         if (pic) coverDataUrl = pic;
       }
 
@@ -1206,9 +1261,11 @@
 
   async function importFiles(files, { remember = false } = {}) {
     const list = Array.from(files || []).filter((f) => {
-      const lower = String(f?.name || '').toLowerCase();
-      const rel = String(f?.webkitRelativePath || '').toLowerCase();
-      return lower.endsWith('.mp3') || lower.endsWith('.mpeg') || rel.endsWith('.mp3') || rel.endsWith('.mpeg') || f.type === 'audio/mpeg';
+      const lowerName = String(f?.name || '').toLowerCase();
+      const lowerRel = String(f?.webkitRelativePath || '').toLowerCase();
+      const isAudioType = String(f?.type || '').startsWith('audio/');
+      const matchesExt = ['.mp3', '.mpeg', '.mpga'].some((ext) => lowerName.endsWith(ext) || lowerRel.endsWith(ext));
+      return matchesExt || isAudioType;
     });
     if (!list.length) {
       toast('No MP3 files found');
@@ -1244,7 +1301,7 @@
       for await (const [name, entry] of handle.entries()) {
         const lower = String(name || '').toLowerCase();
         const rel = `${prefix}${name}`;
-        if (entry.kind === 'file' && (lower.endsWith('.mp3') || lower.endsWith('.mpeg'))) {
+        if (entry.kind === 'file' && (lower.endsWith('.mp3') || lower.endsWith('.mpeg') || lower.endsWith('.mpga'))) {
           const file = await entry.getFile();
           const key = fileKey(file);
           if (!seen.has(key)) {
@@ -1492,6 +1549,16 @@
     els.audio.addEventListener('pause', () => renderMiniPlayer());
     els.audio.addEventListener('error', () => toast('Could not play this file'));
 
+    document.addEventListener('visibilitychange', async () => {
+      if (document.hidden) return;
+      if (audioCtx && audioCtx.state === 'suspended' && !state.directAudioMode) {
+        try { await audioCtx.resume(); } catch (err) { console.warn(err); }
+      }
+      if (state.currentTrackId && els.audio.src && !els.audio.paused) {
+        try { await els.audio.play(); } catch (err) { console.warn(err); }
+      }
+    });
+
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         if (!els.sortMenu.classList.contains('hidden')) {
@@ -1607,6 +1674,7 @@
     renderAll();
   });
   els.volReadout.textContent = `${els.volumeSlider.value}%`;
+  syncAudioVolume();
   updateMasterGain();
   applyEQ();
   updateTimeUi();
