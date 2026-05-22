@@ -162,6 +162,25 @@
     });
   }
 
+  async function restoreAlbumCoverPrefs() {
+    try {
+      const saved = await dbGet('prefs', 'albumCoverIndex');
+      if (saved && typeof saved === 'object') {
+        state.albumCoverIndex = new Map(Object.entries(saved).map(([key, value]) => [key, Number(value) || 0]));
+      }
+    } catch (err) {
+      console.warn('Could not restore album cover preferences', err);
+    }
+  }
+
+  async function saveAlbumCoverPrefs() {
+    try {
+      await dbSet('prefs', Object.fromEntries(state.albumCoverIndex.entries()), 'albumCoverIndex');
+    } catch (err) {
+      console.warn('Could not save album cover preferences', err);
+    }
+  }
+
   async function dbDelete(store, key) {
     const db = await dbPromise;
     return new Promise((resolve, reject) => {
@@ -523,7 +542,8 @@
     els.miniArt.src = track.coverDataUrl || fallbackCover(track.title?.[0] || '♪');
     els.miniTitle.textContent = track.title || 'Untitled';
     els.miniArtist.textContent = `${track.artist || 'Unknown Artist'} · ${track.album || 'Unknown Album'}`;
-    els.miniPlayBtn.textContent = els.audio.paused ? '▶' : '⏸';
+    els.miniPlayBtn.textContent = els.audio.paused ? '▶' : '=';
+    els.miniPlayBtn.classList.toggle('paused-glyph', !els.audio.paused);
   }
 
   function updatePlayerView() {
@@ -570,7 +590,7 @@
 
   function songRowHTML(track, { showRemove = false } = {}) {
     const current = track.id === state.currentTrackId;
-    const removeBtn = showRemove ? '<button class="icon-btn queue-remove remove-track" title="Remove song">–</button>' : '';
+    const removeBtn = showRemove ? '<button class="icon-btn queue-remove remove-track" title="Remove song">Remove</button>' : '';
     return `
       <article class="song-row ${current ? 'current' : ''}" data-track-id="${escapeAttr(track.id)}">
         <img class="song-cover" src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
@@ -608,7 +628,7 @@
         </div>
         <div class="item-actions">
           <button class="icon-btn queue-play" title="Play now">▶</button>
-          <button class="icon-btn queue-remove" title="Remove">–</button>
+          <button class="icon-btn queue-remove" title="Remove">Remove</button>
         </div>
       </article>`;
   }
@@ -878,7 +898,7 @@
       gainNode.gain.value = output;
     }
 
-    els.volReadout.textContent = `${Math.round(vol * 200)}%${state.autoNormalize && norm !== 1 ? ` · EQ ${norm.toFixed(2)}×` : ''}`;
+    els.volReadout.textContent = `${Math.round((output / 0.5) * 100)}%${state.autoNormalize && norm !== 1 ? ` · EQ ${norm.toFixed(2)}×` : ''}`;
     return output;
   }
 
@@ -997,13 +1017,20 @@
 
   async function goNext() {
     if (!state.queue.length) return;
-    if (state.currentIndex < state.queue.length - 1) {
-      state.currentIndex += 1;
+
+    const finishedIndex = clamp(state.currentIndex, 0, Math.max(0, state.queue.length - 1));
+    if (state.queue.length) {
+      state.queue.splice(finishedIndex, 1);
+    }
+
+    if (state.queue.length) {
+      state.currentIndex = clamp(finishedIndex, 0, state.queue.length - 1);
       state.currentTrackId = state.queue[state.currentIndex];
       renderAll();
       await startPlayback();
       return;
     }
+
     if (state.repeatAlbum && state.currentAlbumId) {
       const album = groupAlbums().find((a) => a.id === state.currentAlbumId);
       if (!album) return;
@@ -1013,7 +1040,10 @@
       await startPlayback();
       return;
     }
+
     els.audio.pause();
+    state.currentTrackId = null;
+    state.currentIndex = -1;
     renderAll();
   }
 
@@ -1218,6 +1248,7 @@
     const frames = { title: '', artist: '', album: '', year: '', trackNumber: 0 };
     let coverDataUrl = '';
     let lyrics = '';
+    const lyricFrames = [];
     const frameLen = version === 2 ? 6 : 10;
     const textFrameIds = new Set(['TIT2', 'TT2', 'TPE1', 'TP1', 'TALB', 'TAL', 'TPE2', 'TP2', 'TRCK', 'TRK', 'TYER', 'TYE', 'TDRC']);
 
@@ -1254,12 +1285,13 @@
         const encoding = bytes[0] ?? 3;
         let pos = 1;
 
-        // Most ID3v2 lyrics frames store a 3-byte language code immediately after the encoding byte.
         let lang = '';
         if (bytes.length >= 4) {
-          lang = String.fromCharCode(bytes[1], bytes[2], bytes[3]).toLowerCase();
-          if (/^[a-z]{3}$/.test(lang)) pos = 4;
-          else lang = '';
+          const maybeLang = String.fromCharCode(bytes[1], bytes[2], bytes[3]).toLowerCase();
+          if (/^[a-z]{3}$/.test(maybeLang)) {
+            lang = maybeLang;
+            pos = 4;
+          }
         }
 
         const readTerminatedText = () => {
@@ -1272,24 +1304,20 @@
           }
         };
 
-        // Skip the content descriptor, then decode the lyrics payload.
         readTerminatedText();
         const lyricBytes = bytes.slice(pos);
-        let candidates = [];
+        const candidates = [];
         if (encoding === 1 || encoding === 2) {
           const [le, be] = decodeUtf16Variants(lyricBytes);
           candidates.push(le, be);
         }
         candidates.push(decodeTextBytes(lyricBytes, encoding, true));
 
-        // Some editors leak the language code into the decoded string; remove it gently.
         const decodedLyrics = bestLyricsCandidate(candidates)
-          .replace(/^(?:eng|[a-z]{3})\s*[:\-]?\s*/i, '')
-          .replace(/\r\n?/g, '\n');
+          .replace(/\r\n?/g, '\n')
+          .trim();
 
-        if (decodedLyrics && (!lyrics || lang === 'eng' || lang === '')) {
-          lyrics = decodedLyrics.replace(/^\s+|\s+$/g, '');
-        }
+        if (decodedLyrics) lyricFrames.push({ lang, text: decodedLyrics });
       } else if ((id === 'APIC' || id === 'PIC') && !coverDataUrl) {
         const pic = id === 'PIC' ? decodeApicV22(frame) : decodeApic(frame);
         if (pic) coverDataUrl = pic;
@@ -1297,6 +1325,10 @@
 
       offset = dataEnd;
     }
+
+    const englishLyrics = lyricFrames.filter((frame) => frame.lang === 'eng').map((frame) => frame.text);
+    const lyricPool = englishLyrics.length ? englishLyrics : lyricFrames.map((frame) => frame.text);
+    lyrics = bestLyricsCandidate(lyricPool);
 
     return { ...frames, coverDataUrl, lyrics };
   }
@@ -1439,6 +1471,7 @@
       if (changed) {
         for (const track of state.library) await dbSet('tracks', track);
       }
+      await restoreAlbumCoverPrefs();
       await restoreSavedFolder();
       if (!state.library.length) {
         els.folderNote.textContent = 'No songs loaded yet. Import MP3 files or choose a folder.';
