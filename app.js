@@ -464,12 +464,13 @@
     return covers[index % covers.length];
   }
 
-  function cycleAlbumCover(albumId) {
+  async function cycleAlbumCover(albumId) {
     const album = groupAlbums().find((a) => a.id === albumId);
     if (!album || !album.covers?.length) return;
     const next = ((state.albumCoverIndex.get(albumId) || 0) + 1) % album.covers.length;
     state.albumCoverIndex.set(albumId, next);
     els.albumHeroArt.src = albumCoverFor(album);
+    await saveAlbumCoverPrefs();
     toast('Album cover changed for this album view');
   }
 
@@ -501,7 +502,7 @@
     els.albumHeroTitle.textContent = album.album || 'Unknown Album';
     const artistLabel = album.artistList?.length > 1 ? album.artistList.join(' • ') : (album.artist || 'Unknown Artist');
     els.albumHeroMeta.textContent = `${artistLabel} • ${tracks.length} song${tracks.length === 1 ? '' : 's'}`;
-    els.albumHeroArt.onclick = () => cycleAlbumCover(album.id);
+    els.albumHeroArt.onclick = () => { cycleAlbumCover(album.id); };
     els.albumSongsList.innerHTML = tracks.map((t) => songRowHTML(t)).join('') || emptyState('No songs in this album.');
     bindSongRows(els.albumSongsList, tracks, album.id);
   }
@@ -542,7 +543,7 @@
     els.miniArt.src = track.coverDataUrl || fallbackCover(track.title?.[0] || '♪');
     els.miniTitle.textContent = track.title || 'Untitled';
     els.miniArtist.textContent = `${track.artist || 'Unknown Artist'} · ${track.album || 'Unknown Album'}`;
-    els.miniPlayBtn.textContent = els.audio.paused ? '▶' : '=';
+    els.miniPlayBtn.textContent = els.audio.paused ? '▶' : '🟰';
     els.miniPlayBtn.classList.toggle('paused-glyph', !els.audio.paused);
   }
 
@@ -590,7 +591,7 @@
 
   function songRowHTML(track, { showRemove = false } = {}) {
     const current = track.id === state.currentTrackId;
-    const removeBtn = showRemove ? '<button class="icon-btn queue-remove remove-track" title="Remove song">Remove</button>' : '';
+    const removeBtn = showRemove ? '<button class="icon-btn queue-remove remove-track" title="Remove song">–</button>' : '';
     return `
       <article class="song-row ${current ? 'current' : ''}" data-track-id="${escapeAttr(track.id)}">
         <img class="song-cover" src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
@@ -628,7 +629,7 @@
         </div>
         <div class="item-actions">
           <button class="icon-btn queue-play" title="Play now">▶</button>
-          <button class="icon-btn queue-remove" title="Remove">Remove</button>
+          <button class="icon-btn queue-remove" title="Remove from queue">–</button>
         </div>
       </article>`;
   }
@@ -649,11 +650,13 @@
         const queueIds = items.map((t) => t.id);
         const index = queueIds.indexOf(id);
         const hasPlayback = state.currentTrackId && !els.audio.paused;
-        if (hasPlayback && state.currentTrackId !== id) {
+
+        if (hasPlayback) {
           queueTrackNext(id, queueIds, albumId ? 'album' : 'songs', albumId);
           toast('Queued next');
           return;
         }
+
         selectTrack(id, queueIds, index, albumId ? 'album' : 'songs', albumId, { autoplay: true });
       });
 
@@ -663,7 +666,7 @@
           e.stopPropagation();
           const queueIds = items.map((t) => t.id);
           const index = queueIds.indexOf(id);
-          if (state.currentTrackId && !els.audio.paused && state.currentTrackId !== id) {
+          if (state.currentTrackId && !els.audio.paused) {
             queueTrackNext(id, queueIds, albumId ? 'album' : 'songs', albumId);
             toast('Queued next');
             return;
@@ -898,7 +901,7 @@
       gainNode.gain.value = output;
     }
 
-    els.volReadout.textContent = `${Math.round((output / 0.5) * 100)}%${state.autoNormalize && norm !== 1 ? ` · EQ ${norm.toFixed(2)}×` : ''}`;
+    els.volReadout.textContent = `${Math.round(vol * 100)}%${state.autoNormalize && norm !== 1 ? ` · EQ ${norm.toFixed(2)}×` : ''}`;
     return output;
   }
 
