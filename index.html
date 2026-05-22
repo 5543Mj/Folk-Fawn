@@ -4,10 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#111111" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>Folk Fawn</title>
-  <link rel="stylesheet" href="styles.css" />
   <link rel="manifest" href="manifest.json" />
-  <link rel="icon" type="image/x-icon" href="/img/lier.png" />
+  <link rel="icon" type="image/png" href="img/lier.png" />
+  <link rel="apple-touch-icon" href="img/lier.png" />
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div id="appShell" class="app-shell">
@@ -132,9 +135,9 @@
           <input id="seekSlider" type="range" min="0" max="1000" value="0" />
         </div>
 
-        <div class="slider-block">
+        <div class="slider-block volume-block">
           <div class="slider-labels"><span>Volume</span><span id="volReadout">80%</span></div>
-          <input id="volumeSlider" type="range" min="0" max="35" value="25" />
+          <input id="volumeSlider" type="range" min="0" max="100" value="80" />
         </div>
 
         <details class="dropdown-block" id="upNextBlock">
