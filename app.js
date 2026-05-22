@@ -871,7 +871,7 @@
     if (state.directAudioMode || !gainNode) {
       els.audio.volume = output;
     }
-    els.volReadout.textContent = `${Math.round(vol * 100)}%${state.autoNormalize && norm !== 1 ? ` · EQ ${norm.toFixed(2)}×` : ''}`;
+    els.volReadout.textContent = `${Math.round(vol * 200)}%${state.autoNormalize && norm !== 1 ? ` · EQ ${norm.toFixed(2)}×` : ''}`;
     return output;
   }
 
