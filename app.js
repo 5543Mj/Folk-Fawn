@@ -16,12 +16,17 @@
     repeatAlbum: false,
     currentAlbumId: null,
     albumCoverIndex: new Map(),
+    albumCoverSelection: new Map(),
     folderHandle: null,
     autoNormalize: true,
     audioReady: false,
     currentQueueMode: 'songs',
     directAudioMode: false,
   };
+  const ABS_VOLUME_MIN = 0.25;
+  const ABS_VOLUME_MAX = 10;
+  const ABS_VOLUME_STEP = 0.05;
+
 
   const els = {
     tabbar: $('#tabbar'),
@@ -76,6 +81,8 @@
     timeEnd: $('#timeEnd'),
     volumeSlider: $('#volumeSlider'),
     volReadout: $('#volReadout'),
+    absVolumeSlider: $('#absVolumeSlider'),
+    absVolumeReadout: $('#absVolumeReadout'),
     bassSlider: $('#bassSlider'),
     midSlider: $('#midSlider'),
     trebleSlider: $('#trebleSlider'),
@@ -164,9 +171,9 @@
 
   async function restoreAlbumCoverPrefs() {
     try {
-      const saved = await dbGet('prefs', 'albumCoverIndex');
+      const saved = await dbGet('prefs', 'albumCoverSelection');
       if (saved && typeof saved === 'object') {
-        state.albumCoverIndex = new Map(Object.entries(saved).map(([key, value]) => [key, Number(value) || 0]));
+        state.albumCoverSelection = new Map(Object.entries(saved).map(([key, value]) => [key, String(value)]));
       }
     } catch (err) {
       console.warn('Could not restore album cover preferences', err);
@@ -175,7 +182,7 @@
 
   async function saveAlbumCoverPrefs() {
     try {
-      await dbSet('prefs', Object.fromEntries(state.albumCoverIndex.entries()), 'albumCoverIndex');
+      await dbSet('prefs', Object.fromEntries(state.albumCoverSelection.entries()), 'albumCoverSelection');
     } catch (err) {
       console.warn('Could not save album cover preferences', err);
     }
@@ -295,7 +302,7 @@
           year: track.year || '',
           dateAdded: track.dateAdded || 0,
           tracks: [],
-          covers: [],
+          coverTracks: [],
           artists: new Set(),
         });
       }
@@ -307,8 +314,7 @@
     for (const album of map.values()) {
       album.tracks.sort((a, b) => (Number(a.trackNumber) || 0) - (Number(b.trackNumber) || 0) || (a.title || '').localeCompare(b.title || ''));
       const oldest = [...album.tracks].sort((a, b) => (a.dateAdded || 0) - (b.dateAdded || 0));
-      const covers = oldest.filter((t) => t.coverDataUrl).map((t) => t.coverDataUrl);
-      if (covers.length) album.covers = covers;
+      album.coverTracks = oldest.filter((t) => t.coverDataUrl).map((t) => ({ id: t.id, coverDataUrl: t.coverDataUrl }));
       const years = album.tracks.map((t) => Number(t.year)).filter((n) => Number.isFinite(n) && n > 0);
       if (years.length) album.year = String(Math.min(...years));
       album.dateAdded = Math.min(...album.tracks.map((t) => t.dateAdded || Date.now()));
@@ -458,19 +464,29 @@
   }
 
   function albumCoverFor(album) {
-    const covers = album.covers || [];
+    const covers = album.coverTracks || [];
     if (!covers.length) return fallbackCover(album.album?.[0] || '♪');
-    const index = state.albumCoverIndex.get(album.id) || 0;
-    return covers[index % covers.length];
+    const selectedId = state.albumCoverSelection.get(album.id);
+    if (selectedId) {
+      const selected = covers.find((c) => c.id === selectedId);
+      if (selected?.coverDataUrl) return selected.coverDataUrl;
+    }
+    return covers[0]?.coverDataUrl || fallbackCover(album.album?.[0] || '♪');
   }
 
   async function cycleAlbumCover(albumId) {
     const album = groupAlbums().find((a) => a.id === albumId);
-    if (!album || !album.covers?.length) return;
-    const next = ((state.albumCoverIndex.get(albumId) || 0) + 1) % album.covers.length;
-    state.albumCoverIndex.set(albumId, next);
+    const covers = album?.coverTracks || [];
+    if (!album || !covers.length) return;
+    const currentId = state.albumCoverSelection.get(albumId);
+    const currentIndex = Math.max(0, covers.findIndex((c) => c.id === currentId));
+    const next = covers[(currentIndex + 1) % covers.length];
+    if (!next) return;
+    state.albumCoverSelection.set(albumId, next.id);
     els.albumHeroArt.src = albumCoverFor(album);
     await saveAlbumCoverPrefs();
+    renderAlbums();
+    renderAll();
     toast('Album cover changed for this album view');
   }
 
@@ -543,8 +559,9 @@
     els.miniArt.src = track.coverDataUrl || fallbackCover(track.title?.[0] || '♪');
     els.miniTitle.textContent = track.title || 'Untitled';
     els.miniArtist.textContent = `${track.artist || 'Unknown Artist'} · ${track.album || 'Unknown Album'}`;
-    els.miniPlayBtn.textContent = els.audio.paused ? '▶' : '🟰';
+    els.miniPlayBtn.textContent = els.audio.paused ? '▶' : '=';
     els.miniPlayBtn.classList.toggle('paused-glyph', !els.audio.paused);
+    updateMediaSession(track);
   }
 
   function updatePlayerView() {
@@ -558,8 +575,10 @@
       els.miniTitle.textContent = 'Nothing playing';
       els.miniArtist.textContent = '';
       els.lyricsText.textContent = 'No embedded lyrics found.';
+      updateSongVolumeControls(null);
       updateLoopButton();
       updateTimeUi();
+      updateMediaSession(null);
       return;
     }
     els.playerTitle.textContent = track.title || 'Untitled';
@@ -591,7 +610,7 @@
 
   function songRowHTML(track, { showRemove = false } = {}) {
     const current = track.id === state.currentTrackId;
-    const removeBtn = showRemove ? '<button class="icon-btn queue-remove remove-track" title="Remove song">–</button>' : '';
+    const removeBtn = showRemove ? '<button class="icon-btn queue-remove remove-track" title="Skip song">–</button>' : '';
     return `
       <article class="song-row ${current ? 'current' : ''}" data-track-id="${escapeAttr(track.id)}">
         <img class="song-cover" src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
@@ -629,7 +648,7 @@
         </div>
         <div class="item-actions">
           <button class="icon-btn queue-play" title="Play now">▶</button>
-          <button class="icon-btn queue-remove" title="Remove from queue">–</button>
+          <button class="icon-btn queue-remove" title="Skip from queue">–</button>
         </div>
       </article>`;
   }
@@ -787,6 +806,7 @@
     }
     updateMasterGain();
     applyEQ();
+    updateMediaSession(track);
     renderMiniPlayer();
     updatePlayerView();
     renderQueue();
@@ -892,8 +912,10 @@
   function syncAudioVolume() {
     const track = findTrack(state.currentTrackId);
     const norm = state.autoNormalize && track?.normGain ? Number(track.normGain) : 1;
+    const songVol = clamp(Number(track?.absVolume) || 1, ABS_VOLUME_MIN, ABS_VOLUME_MAX);
     const vol = Number(els.volumeSlider.value) / 100;
-    const output = clamp(vol * norm, 0, 0.5);
+    const maxOutput = state.directAudioMode ? 1 :10;
+    const output = clamp(vol * norm * songVol, 0, maxOutput);
 
     if (state.directAudioMode || !gainNode) {
       els.audio.volume = output;
@@ -901,7 +923,10 @@
       gainNode.gain.value = output;
     }
 
-    els.volReadout.textContent = `${Math.round(vol * 100)}%${state.autoNormalize && norm !== 1 ? ` · EQ ${norm.toFixed(2)}×` : ''}`;
+    els.volReadout.textContent = `${Math.round(Number(els.volumeSlider.value))}%${state.autoNormalize && norm !== 1 ? ` · EQ ${norm.toFixed(2)}×` : ''}`;
+    if (els.absVolumeReadout) {
+      els.absVolumeReadout.textContent = `${songVol.toFixed(2)}×`;
+    }
     return output;
   }
 
@@ -1355,6 +1380,7 @@
       lyrics: meta.lyrics || '',
       albumId,
       normGain: meta.normGain || 1,
+      absVolume: 1,
       duration: meta.duration || 0,
     };
   }
@@ -1468,8 +1494,8 @@
       let changed = false;
       state.library = state.library.map((track) => {
         const album = normalizeAlbumLabel(track.album);
-        if (album !== track.album) changed = true;
-        return { ...track, album, albumId: normalizeForSort(album) || 'singles' };
+        if (album !== track.album || typeof track.absVolume !== 'number') changed = true;
+        return { ...track, album, albumId: normalizeForSort(album) || 'singles', absVolume: Number(track.absVolume) || 1 };
       });
       if (changed) {
         for (const track of state.library) await dbSet('tracks', track);
@@ -1518,6 +1544,45 @@
 
   function updateLoopButton() {
     els.loopAlbumBtn.textContent = state.repeatAlbum ? 'Looping Album' : 'Loop Album';
+  }
+
+  function updateSongVolumeControls(track = findTrack(state.currentTrackId)) {
+    const value = clamp(Number(track?.absVolume) || 1, ABS_VOLUME_MIN, ABS_VOLUME_MAX);
+    if (els.absVolumeSlider) els.absVolumeSlider.value = String(value);
+    if (els.absVolumeReadout) els.absVolumeReadout.textContent = `${value.toFixed(2)}×`;
+  }
+
+  function updateMediaSession(track = findTrack(state.currentTrackId)) {
+    if (!('mediaSession' in navigator)) return;
+    try {
+      const cover = track?.coverDataUrl || DEFAULT_ART;
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: track?.title || 'Untitled',
+        artist: track?.artist || 'Unknown Artist',
+        album: track?.album || 'Unknown Album',
+        artwork: [
+          { src: cover, sizes: '96x96', type: 'image/png' },
+          { src: cover, sizes: '128x128', type: 'image/png' },
+          { src: cover, sizes: '192x192', type: 'image/png' },
+          { src: cover, sizes: '256x256', type: 'image/png' },
+          { src: cover, sizes: '384x384', type: 'image/png' },
+        ],
+      });
+      navigator.mediaSession.playbackState = els.audio.paused ? 'paused' : 'playing';
+      const handlers = {
+        play: () => togglePlayPause(),
+        pause: () => togglePlayPause(),
+        previoustrack: () => goPrev(),
+        nexttrack: () => goNext(),
+        seekbackward: () => { els.audio.currentTime = Math.max(0, (els.audio.currentTime || 0) - 10); },
+        seekforward: () => { els.audio.currentTime = Math.min(els.audio.duration || 0, (els.audio.currentTime || 0) + 10); },
+      };
+      Object.entries(handlers).forEach(([key, fn]) => {
+        try { navigator.mediaSession.setActionHandler(key, fn); } catch {}
+      });
+    } catch (err) {
+      console.warn('Media session update failed', err);
+    }
   }
 
   function openAlbumFromSong(trackId) {
@@ -1636,6 +1701,21 @@
       updateMasterGain();
     });
 
+    if (els.absVolumeSlider) {
+      els.absVolumeSlider.min = String(ABS_VOLUME_MIN);
+      els.absVolumeSlider.max = String(ABS_VOLUME_MAX);
+      els.absVolumeSlider.step = String(ABS_VOLUME_STEP);
+      els.absVolumeSlider.addEventListener('input', async () => {
+        const track = findTrack(state.currentTrackId);
+        if (!track) return;
+        const value = clamp(Number(els.absVolumeSlider.value) || 1, ABS_VOLUME_MIN, ABS_VOLUME_MAX);
+        track.absVolume = value;
+        if (els.absVolumeReadout) els.absVolumeReadout.textContent = `${value.toFixed(2)}×`;
+        await dbSet('tracks', track);
+        updateMasterGain();
+      });
+    }
+
     els.bassSlider.addEventListener('input', applyEQ);
     els.midSlider.addEventListener('input', applyEQ);
     els.trebleSlider.addEventListener('input', applyEQ);
@@ -1645,9 +1725,15 @@
       renderMiniPlayer();
     });
     els.audio.addEventListener('loadedmetadata', () => updateTimeUi());
-    els.audio.addEventListener('ended', () => { goNext(); });
-    els.audio.addEventListener('play', () => renderMiniPlayer());
-    els.audio.addEventListener('pause', () => renderMiniPlayer());
+    els.audio.addEventListener('ended', () => { goNext(); updateMediaSession(); });
+    els.audio.addEventListener('play', () => {
+      renderMiniPlayer();
+      updateMediaSession();
+    });
+    els.audio.addEventListener('pause', () => {
+      renderMiniPlayer();
+      updateMediaSession();
+    });
     els.audio.addEventListener('error', () => toast('Could not play this file'));
 
     document.addEventListener('visibilitychange', async () => {
@@ -1776,7 +1862,13 @@
     if (state.library.length) toast('Library loaded');
     renderAll();
   });
-  els.volReadout.textContent = `${els.volumeSlider.value}%`;
+  els.volReadout.textContent = `${Math.round(Number(els.volumeSlider.value))}%`;
+  if (els.absVolumeSlider) {
+    els.absVolumeSlider.min = String(ABS_VOLUME_MIN);
+    els.absVolumeSlider.max = String(ABS_VOLUME_MAX);
+    els.absVolumeSlider.step = String(ABS_VOLUME_STEP);
+  }
+  updateSongVolumeControls();
   syncAudioVolume();
   updateMasterGain();
   applyEQ();
