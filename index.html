@@ -117,7 +117,7 @@
 
         <div class="player-actions-left">
           <button class="ghost-btn" id="reshuffleBtn">Reshuffle</button>
-          <button class="ghost-btn" id="loopAlbumBtn">Loop Album</button>
+          <button class="ghost-btn" id="loopAlbumBtn">Loop</button>
         </div>
 
         <div class="now-playing-card">
@@ -158,6 +158,7 @@
         <details class="dropdown-block" id="eqBlock">
           <summary>Equalizer</summary>
           <div class="dropdown-inner eq-grid" id="eqGrid">
+            <label class="wide-range"><span>Song's Absolute Volume</span><span id="absVolumeReadout">1.00×</span><input id="absVolumeSlider" type="range" min="0.25" max="2.5" step="0.05" value="1" /></label>
             <label><span>Bass</span><input id="bassSlider" type="range" min="-12" max="12" value="0" /></label>
             <label><span>Mid</span><input id="midSlider" type="range" min="-12" max="12" value="0" /></label>
             <label><span>Treble</span><input id="trebleSlider" type="range" min="-12" max="12" value="0" /></label>
