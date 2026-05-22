@@ -85,7 +85,7 @@
 
   const dbPromise = openDB();
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  state.directAudioMode = false;
+  state.directAudioMode = isIOS;
   let audioCtx = null;
   let mediaSource = null;
   let gainNode = null;
@@ -570,7 +570,7 @@
 
   function songRowHTML(track, { showRemove = false } = {}) {
     const current = track.id === state.currentTrackId;
-    const removeBtn = showRemove ? '<button class="icon-btn queue-remove remove-track" title="Remove song">Remove</button>' : '';
+    const removeBtn = showRemove ? '<button class="icon-btn queue-remove remove-track" title="Remove song">–</button>' : '';
     return `
       <article class="song-row ${current ? 'current' : ''}" data-track-id="${escapeAttr(track.id)}">
         <img class="song-cover" src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
@@ -608,7 +608,7 @@
         </div>
         <div class="item-actions">
           <button class="icon-btn queue-play" title="Play now">▶</button>
-          <button class="icon-btn queue-remove" title="Remove">Remove</button>
+          <button class="icon-btn queue-remove" title="Remove">–</button>
         </div>
       </article>`;
   }
@@ -753,7 +753,7 @@
     els.audio.src = url;
     els.audio.currentTime = 0;
     syncAudioVolume();
-    if (audioCtx && audioCtx.state === 'suspended') {
+    if (!state.directAudioMode && audioCtx && audioCtx.state === 'suspended') {
       try { await audioCtx.resume(); } catch (err) { console.warn(err); }
     }
     try {
@@ -825,7 +825,10 @@
   }
 
   async function ensureAudioGraph() {
-    if (state.directAudioMode) return;
+    if (state.directAudioMode) {
+      state.audioReady = false;
+      return;
+    }
     if (state.audioReady) return;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     mediaSource = audioCtx.createMediaElementSource(els.audio);
@@ -868,23 +871,25 @@
     const norm = state.autoNormalize && track?.normGain ? Number(track.normGain) : 1;
     const vol = Number(els.volumeSlider.value) / 100;
     const output = clamp(vol * norm, 0, 0.5);
-    if (gainNode) {
-      gainNode.gain.value = output;
-    } else {
+
+    if (state.directAudioMode || !gainNode) {
       els.audio.volume = output;
+    } else {
+      gainNode.gain.value = output;
     }
+
     els.volReadout.textContent = `${Math.round(vol * 200)}%${state.autoNormalize && norm !== 1 ? ` · EQ ${norm.toFixed(2)}×` : ''}`;
     return output;
   }
 
   function updateMasterGain() {
     const output = syncAudioVolume();
-    if (!gainNode) return;
+    if (!gainNode || state.directAudioMode) return;
     gainNode.gain.value = output;
   }
 
   function applyEQ() {
-    if (!bassFilter || !midFilter || !trebleFilter) return;
+    if (state.directAudioMode || !bassFilter || !midFilter || !trebleFilter) return;
     bassFilter.gain.value = Number(els.bassSlider.value);
     midFilter.gain.value = Number(els.midSlider.value);
     trebleFilter.gain.value = Number(els.trebleSlider.value);
@@ -1115,6 +1120,38 @@
     return new TextDecoder('utf-16le').decode(bytes).replace(/\u0000+$/, '');
   }
 
+  function decodeUtf16Variants(bytes) {
+    const asLE = new TextDecoder('utf-16le').decode(bytes).replace(/\u0000+$/, '');
+    const asBE = new TextDecoder('utf-16be').decode(bytes).replace(/\u0000+$/, '');
+    return [asLE, asBE];
+  }
+
+  function scoreLyricsText(text) {
+    const value = String(text || '').replace(/\u0000+/g, '');
+    if (!value.trim()) return -Infinity;
+    const ascii = (value.match(/[\x20-\x7E]/g) || []).length;
+    const letters = (value.match(/[A-Za-z]/g) || []).length;
+    const words = (value.match(/\b[A-Za-z][A-Za-z'’-]*\b/g) || []).length;
+    const lines = value.split('\n').length;
+    const cjk = (value.match(/[\u3400-\u9FFF\uF900-\uFAFF]/g) || []).length;
+    const weird = (value.match(/[\u0000-\u001F]/g) || []).length;
+    return (letters * 3) + (words * 6) + ascii + (lines * 2) - (cjk * 8) - (weird * 4) - (value.includes('�') ? 80 : 0);
+  }
+
+  function bestLyricsCandidate(candidates) {
+    let best = '';
+    let bestScore = -Infinity;
+    for (const candidate of candidates) {
+      const clean = String(candidate || '').replace(/\r\n?/g, '\n').replace(/^\s+|\s+$/g, '');
+      const score = scoreLyricsText(clean);
+      if (score > bestScore) {
+        best = clean;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
   function bytesToBase64(bytes) {
     let binary = '';
     const chunkSize = 0x8000;
@@ -1212,16 +1249,17 @@
         if (id === 'TPE2' || id === 'TP2') frames.artist = frames.artist || text;
         if (id === 'TRCK' || id === 'TRK') frames.trackNumber = parseInt(text.split('/')[0], 10) || 0;
         if (id === 'TYER' || id === 'TYE' || id === 'TDRC') frames.year = String(text).slice(0, 4);
-      } else if ((id === 'USLT' || id === 'ULT') && !lyrics) {
+      } else if ((id === 'USLT' || id === 'ULT')) {
         const bytes = new Uint8Array(frame);
         const encoding = bytes[0] ?? 3;
         let pos = 1;
 
         // Most ID3v2 lyrics frames store a 3-byte language code immediately after the encoding byte.
-        // Some badly-tagged files store the bytes differently, so only skip when it looks like a language tag.
+        let lang = '';
         if (bytes.length >= 4) {
-          const lang = String.fromCharCode(bytes[1], bytes[2], bytes[3]);
-          if (/^[A-Za-z]{3}$/.test(lang)) pos = 4;
+          lang = String.fromCharCode(bytes[1], bytes[2], bytes[3]).toLowerCase();
+          if (/^[a-z]{3}$/.test(lang)) pos = 4;
+          else lang = '';
         }
 
         const readTerminatedText = () => {
@@ -1236,14 +1274,22 @@
 
         // Skip the content descriptor, then decode the lyrics payload.
         readTerminatedText();
-        let lyricBytes = bytes.slice(pos);
-        let decodedLyrics = decodeTextBytes(lyricBytes, encoding, true).replace(/\r\n?/g, '\n');
+        const lyricBytes = bytes.slice(pos);
+        let candidates = [];
+        if (encoding === 1 || encoding === 2) {
+          const [le, be] = decodeUtf16Variants(lyricBytes);
+          candidates.push(le, be);
+        }
+        candidates.push(decodeTextBytes(lyricBytes, encoding, true));
 
         // Some editors leak the language code into the decoded string; remove it gently.
-        decodedLyrics = decodedLyrics.replace(/^(?:eng|[a-z]{3})\s*[:\-]?\s*/i, '');
+        const decodedLyrics = bestLyricsCandidate(candidates)
+          .replace(/^(?:eng|[a-z]{3})\s*[:\-]?\s*/i, '')
+          .replace(/\r\n?/g, '\n');
 
-        // Keep intentional blank lines, but trim only accidental wrapper whitespace.
-        lyrics = decodedLyrics.replace(/^\s+|\s+$/g, '');
+        if (decodedLyrics && (!lyrics || lang === 'eng' || lang === '')) {
+          lyrics = decodedLyrics.replace(/^\s+|\s+$/g, '');
+        }
       } else if ((id === 'APIC' || id === 'PIC') && !coverDataUrl) {
         const pic = id === 'PIC' ? decodeApicV22(frame) : decodeApic(frame);
         if (pic) coverDataUrl = pic;
@@ -1570,12 +1616,11 @@
 
     document.addEventListener('visibilitychange', async () => {
       if (document.hidden) return;
-      if (audioCtx && audioCtx.state === 'suspended') {
+      if (!state.directAudioMode && audioCtx && audioCtx.state === 'suspended') {
         try { await audioCtx.resume(); } catch (err) { console.warn(err); }
       }
-      if (state.currentTrackId && els.audio.src && !els.audio.paused) {
-        try { await els.audio.play(); } catch (err) { console.warn(err); }
-      }
+      renderMiniPlayer();
+      updateTimeUi();
     });
 
     window.addEventListener('keydown', (e) => {
