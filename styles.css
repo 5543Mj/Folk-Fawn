@@ -434,6 +434,7 @@ input[type="range"] {
 .queue-remove {
   background: rgba(221,128,128,.14);
   color: #ffb3b3;
+  min-width: 36px;
 }
 .queue-play {
   background: rgba(255,255,255,.04);
@@ -557,6 +558,9 @@ input[type="range"] {
     height: 38px;
   }
   .mini-info span {
+    display: none;
+  }
+  .volume-block {
     display: none;
   }
   .mini-controls {
