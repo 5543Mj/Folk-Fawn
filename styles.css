@@ -588,3 +588,15 @@ input[type="range"] {
     animation: none !important;
   }
 }
+
+
+#miniPlayBtn {
+  font-weight: 800;
+  display: inline-grid;
+  place-items: center;
+  padding: 1px 0 0 2px;
+}
+#miniPlayBtn.paused-glyph {
+  transform: rotate(90deg) scale(1.06);
+  padding: 0 0 3px 2px;
+}
