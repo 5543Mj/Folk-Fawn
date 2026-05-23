@@ -50,6 +50,13 @@ button.selected,
 .ghost-btn.selected {
   box-shadow: 0 0 0 1px rgba(217,180,141,.25), 0 10px 28px rgba(0,0,0,.28);
 }
+
+.song-row,
+.album-card,
+.queue-row {
+  content-visibility: auto;
+  contain-intrinsic-size: 84px 280px;
+}
 .hidden { display: none !important; }
 .app-shell {
   min-height: 100vh;
