@@ -69,7 +69,6 @@
     miniPrevBtn: $('#miniPrevBtn'),
     miniPlayBtn: $('#miniPlayBtn'),
     miniNextBtn: $('#miniNextBtn'),
-    miniExpandBtn: $('#miniExpandBtn'),
     playerArt: $('#playerArt'),
     playerTitle: $('#playerTitle'),
     playerArtist: $('#playerArtist'),
@@ -509,7 +508,7 @@
     container.appendChild(sentinel);
 
     let currentIndex = 0;
-    const chunkSize = 50;
+    const chunkSize = 30;
 
     function loadMore() {
       const chunk = items.slice(currentIndex, currentIndex + chunkSize);
@@ -1751,7 +1750,13 @@
     });
 
     els.playerBackBtn.addEventListener('click', closePlayerToMini);
-    els.miniExpandBtn.addEventListener('click', togglePlayerSize);
+    els.miniPlayer.addEventListener('click', (e) => {
+      // Prevent expanding if the user clicked one of the media control buttons
+      if (e.target.closest('.mini-controls')) return;
+      togglePlayerSize();
+    });
+
+    els.miniPrevBtn.addEventListener('click', goPrev);
 
     els.miniPrevBtn.addEventListener('click', goPrev);
     els.miniPlayBtn.addEventListener('click', togglePlayPause);
