@@ -23,9 +23,9 @@
     currentQueueMode: 'songs',
     directAudioMode: false,
   };
-  const ABS_VOLUME_MIN = 0.25;
+  const ABS_VOLUME_MIN = 0.10;
   const ABS_VOLUME_MAX = 10;
-  const ABS_VOLUME_STEP = 0.05;
+  const ABS_VOLUME_STEP = 0.1;
 
 
   const els = {
@@ -104,6 +104,7 @@
   let seekDragging = false;
   let queueDraggingId = null;
   let queueDragOverId = null;
+  const listObservers = new Map();
 
   const DEFAULT_ART = svgDataUri(`
     <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
@@ -490,26 +491,92 @@
     toast('Album cover changed for this album view');
   }
 
+  // --- LAZY LIST RENDERING ENGINE ---
+  function renderLazyList(container, items, renderHtmlFn, bindNodesFn, emptyText) {
+    if (listObservers.has(container)) {
+      listObservers.get(container).disconnect();
+      listObservers.delete(container);
+    }
+    container.innerHTML = '';
+    if (!items || !items.length) {
+      container.innerHTML = emptyState(emptyText);
+      return;
+    }
+
+    const sentinel = document.createElement('div');
+    sentinel.className = 'sentinel';
+    sentinel.style.height = '1px';
+    container.appendChild(sentinel);
+
+    let currentIndex = 0;
+    const chunkSize = 50;
+
+    function loadMore() {
+      const chunk = items.slice(currentIndex, currentIndex + chunkSize);
+      if (!chunk.length) return;
+
+      const temp = document.createElement('div');
+      temp.innerHTML = chunk.map(renderHtmlFn).join('');
+      const nodes = Array.from(temp.children);
+
+      nodes.forEach(node => container.insertBefore(node, sentinel));
+      if (bindNodesFn) bindNodesFn(nodes);
+
+      currentIndex += chunkSize;
+
+      if (currentIndex >= items.length) {
+        if (listObservers.has(container)) {
+          listObservers.get(container).disconnect();
+          listObservers.delete(container);
+        }
+        sentinel.remove();
+      }
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting) loadMore();
+    }, { rootMargin: '400px' });
+
+    observer.observe(sentinel);
+    listObservers.set(container, observer);
+    loadMore(); 
+  }
+
   function renderSongs() {
     const items = sortTracks(getFilteredLibrary());
     els.songsCount.textContent = `${items.length} song${items.length === 1 ? '' : 's'} in view`;
-    els.songsList.innerHTML = items.map((t) => songRowHTML(t)).join('') || emptyState('No songs found.');
-    bindSongRows(els.songsList, items);
+    renderLazyList(
+      els.songsList, 
+      items, 
+      (t) => songRowHTML(t), 
+      (nodes) => bindSongRows(nodes, items), 
+      'No songs found.'
+    );
   }
 
   function renderSearchResults() {
     const items = sortTracks(getFilteredLibrary());
-    els.searchList.innerHTML = items.map((t) => songRowHTML(t, { showRemove: true })).join('') || emptyState('No matching songs yet.');
-    bindSongRows(els.searchList, items, null, { allowRemove: true });
+    renderLazyList(
+      els.searchList, 
+      items, 
+      (t) => songRowHTML(t, { showRemove: true }), 
+      (nodes) => bindSongRows(nodes, items, null, { allowRemove: true }), 
+      'No matching songs yet.'
+    );
   }
 
   function renderAlbums() {
     const albums = sortAlbums(groupAlbums());
     els.albumsCount.textContent = `${albums.length} album${albums.length === 1 ? '' : 's'} in library`;
-    els.albumsGrid.innerHTML = albums.map((album) => albumCardHTML(album)).join('') || emptyState('No albums found.');
-    $$('.album-card', els.albumsGrid).forEach((card) => {
-      card.addEventListener('click', () => openAlbum(card.dataset.albumId));
-    });
+    renderLazyList(
+      els.albumsGrid, 
+      albums, 
+      (album) => albumCardHTML(album), 
+      (nodes) => {
+        nodes.forEach(card => card.addEventListener('click', () => openAlbum(card.dataset.albumId)));
+      }, 
+      'No albums found.'
+    );
   }
 
   function renderAlbum(album) {
@@ -519,8 +586,14 @@
     const artistLabel = album.artistList?.length > 1 ? album.artistList.join(' • ') : (album.artist || 'Unknown Artist');
     els.albumHeroMeta.textContent = `${artistLabel} • ${tracks.length} song${tracks.length === 1 ? '' : 's'}`;
     els.albumHeroArt.onclick = () => { cycleAlbumCover(album.id); };
-    els.albumSongsList.innerHTML = tracks.map((t) => songRowHTML(t)).join('') || emptyState('No songs in this album.');
-    bindSongRows(els.albumSongsList, tracks, album.id);
+    
+    renderLazyList(
+      els.albumSongsList, 
+      tracks, 
+      (t) => songRowHTML(t), 
+      (nodes) => bindSongRows(nodes, tracks, album.id), 
+      'No songs in this album.'
+    );
   }
 
   function renderQueue() {
@@ -529,24 +602,32 @@
       els.queueList.innerHTML = emptyState('Queue is empty.');
       return;
     }
-    els.queueList.innerHTML = q.map((t, idx) => queueRowHTML(t, idx)).join('');
-    $$('.queue-row', els.queueList).forEach((row) => {
-      row.draggable = true;
-      row.addEventListener('dragstart', onQueueDragStart);
-      row.addEventListener('dragover', onQueueDragOver);
-      row.addEventListener('drop', onQueueDrop);
-      row.addEventListener('dragend', onQueueDragEnd);
-      const remove = $('.queue-remove', row);
-      const play = $('.queue-play', row);
-      if (remove) remove.addEventListener('click', (e) => {
-        e.stopPropagation();
-        removeFromQueue(row.dataset.trackId);
-      });
-      if (play) play.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        await playTrackById(row.dataset.trackId);
-      });
-    });
+    
+    renderLazyList(
+      els.queueList, 
+      q, 
+      (t, idx) => queueRowHTML(t, idx), 
+      (nodes) => {
+        nodes.forEach((row) => {
+          row.draggable = true;
+          row.addEventListener('dragstart', onQueueDragStart);
+          row.addEventListener('dragover', onQueueDragOver);
+          row.addEventListener('drop', onQueueDrop);
+          row.addEventListener('dragend', onQueueDragEnd);
+          const remove = $('.queue-remove', row);
+          const play = $('.queue-play', row);
+          if (remove) remove.addEventListener('click', (e) => {
+            e.stopPropagation();
+            removeFromQueue(row.dataset.trackId);
+          });
+          if (play) play.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            await playTrackById(row.dataset.trackId);
+          });
+        });
+      }, 
+      'Queue is empty.'
+    );
   }
 
   function renderMiniPlayer() {
@@ -590,14 +671,16 @@
     els.miniTitle.textContent = track.title || 'Untitled';
     els.miniArtist.textContent = `${track.artist || 'Unknown Artist'} · ${track.album || 'Unknown Album'}`;
     els.lyricsText.textContent = track.lyrics?.trim() || 'No embedded lyrics found.';
+    
+    updateSongVolumeControls(track); 
     updateLoopButton();
     updateTimeUi();
     renderQueue();
   }
 
   function updateLoopButton() {
-    els.loopAlbumBtn.textContent = state.repeatAlbum ? 'Looping Album' : 'Loop Album';
-    els.loopAlbumBtn.classList.toggle('active-button', state.repeatAlbum);
+    els.loopAlbumBtn.textContent = state.repeatAlbum ? 'Looping' : 'Loop';
+    els.loopAlbumBtn.classList.toggle('selected', state.repeatAlbum);
   }
 
   function updateTimeUi() {
@@ -613,7 +696,7 @@
     const removeBtn = showRemove ? '<button class="icon-btn queue-remove remove-track" title="Skip song">–</button>' : '';
     return `
       <article class="song-row ${current ? 'current' : ''}" data-track-id="${escapeAttr(track.id)}">
-        <img class="song-cover" src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
+        <img class="song-cover" loading="lazy" src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
         <div class="song-meta">
           <div class="song-title">${escapeHtml(track.title || track.fileName || 'Untitled')}</div>
           <div class="song-artist">${escapeHtml(track.artist || 'Unknown Artist')}</div>
@@ -629,7 +712,7 @@
   function albumCardHTML(album) {
     return `
       <article class="album-card" data-album-id="${escapeAttr(album.id)}">
-        <img src="${escapeAttr(albumCoverFor(album))}" alt="${escapeHtml(album.album)}" />
+        <img loading="lazy" src="${escapeAttr(albumCoverFor(album))}" alt="${escapeHtml(album.album)}" />
         <div class="album-meta">
           <div class="album-title">${escapeHtml(album.album || 'Unknown Album')}</div>
           <div class="album-sub">${escapeHtml(album.artist || 'Unknown Artist')}</div>
@@ -641,7 +724,7 @@
     return `
       <article class="queue-row" data-track-id="${escapeAttr(track.id)}">
         <div class="queue-handle" title="Drag to reorder">⋮⋮</div>
-        <img class="queue-cover" src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
+        <img class="queue-cover" loading="lazy" src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
         <div class="queue-meta">
           <div class="queue-title">${escapeHtml(track.title || track.fileName || 'Untitled')}</div>
           <div class="queue-sub">${escapeHtml(track.artist || 'Unknown Artist')} · ${escapeHtml(normalizeAlbumLabel(track.album) || 'Singles')}</div>
@@ -657,8 +740,8 @@
     return `<div class="import-note">${escapeHtml(text)}</div>`;
   }
 
-  function bindSongRows(root, items, albumId = null, { allowRemove = false } = {}) {
-    $$('.song-row', root).forEach((row) => {
+  function bindSongRows(nodes, items, albumId = null, { allowRemove = false } = {}) {
+    nodes.forEach((row) => {
       const id = row.dataset.trackId;
       const song = items.find((t) => t.id === id) || findTrack(id);
       if (!song) return;
@@ -914,7 +997,7 @@
     const norm = state.autoNormalize && track?.normGain ? Number(track.normGain) : 1;
     const songVol = clamp(Number(track?.absVolume) || 1, ABS_VOLUME_MIN, ABS_VOLUME_MAX);
     const vol = Number(els.volumeSlider.value) / 100;
-    const maxOutput = state.directAudioMode ? 1 :10;
+    const maxOutput = state.directAudioMode ? 1 : 10;
     const output = clamp(vol * norm * songVol, 0, maxOutput);
 
     if (state.directAudioMode || !gainNode) {
@@ -923,9 +1006,9 @@
       gainNode.gain.value = output;
     }
 
-    els.volReadout.textContent = `${Math.round(Number(els.volumeSlider.value))}%${state.autoNormalize && norm !== 1 ? ` · EQ ${norm.toFixed(2)}×` : ''}`;
+    els.volReadout.textContent = `${Math.round(Number(els.volumeSlider.value))}%${(state.autoNormalize && norm !== 1 && !state.directAudioMode) ? ` · EQ ${norm.toFixed(2)}×` : ''}`;
     if (els.absVolumeReadout) {
-      els.absVolumeReadout.textContent = `${songVol.toFixed(2)}×`;
+      els.absVolumeReadout.textContent = `${songVol.toFixed(1)}×`;
     }
     return output;
   }
@@ -1193,7 +1276,7 @@
     const lines = value.split('\n').length;
     const cjk = (value.match(/[\u3400-\u9FFF\uF900-\uFAFF]/g) || []).length;
     const weird = (value.match(/[\u0000-\u001F]/g) || []).length;
-    return (letters * 3) + (words * 6) + ascii + (lines * 2) - (cjk * 8) - (weird * 4) - (value.includes('�') ? 80 : 0);
+    return (letters * 3) + (words * 6) + ascii + (lines * 2) - (cjk * 8) - (weird * 4) - (value.includes('') ? 80 : 0);
   }
 
   function bestLyricsCandidate(candidates) {
@@ -1246,7 +1329,7 @@
       const bytes = new Uint8Array(frame);
       const encoding = bytes[0];
       let i = 1;
-      const mime = String.fromCharCode(bytes[i], bytes[i + 1], bytes[i + 2]).replace(/ +$/, '') || 'image/jpeg';
+      const mime = String.fromCharCode(bytes[i], bytes[i + 1], bytes[i + 2]).replace(/ +$/, '') || 'image/jpeg';
       i += 3;
       i += 1; // picture type
       if (encoding === 0 || encoding === 3) {
@@ -1283,7 +1366,7 @@
     while (offset + frameLen <= end) {
       const idBytes = new Uint8Array(buffer, offset, version === 2 ? 3 : 4);
       const id = String.fromCharCode(...idBytes);
-      if (!/^[A-Z0-9]{3,4}$/.test(id) || id.replace(/ /g, '') === '') break;
+      if (!/^[A-Z0-9]{3,4}$/.test(id) || id.replace(/ /g, '') === '') break;
 
       let frameSize = 0;
       let dataStart = offset + frameLen;
@@ -1542,14 +1625,10 @@
     renderAll();
   }
 
-  function updateLoopButton() {
-    els.loopAlbumBtn.textContent = state.repeatAlbum ? 'Looping Album' : 'Loop Album';
-  }
-
   function updateSongVolumeControls(track = findTrack(state.currentTrackId)) {
     const value = clamp(Number(track?.absVolume) || 1, ABS_VOLUME_MIN, ABS_VOLUME_MAX);
     if (els.absVolumeSlider) els.absVolumeSlider.value = String(value);
-    if (els.absVolumeReadout) els.absVolumeReadout.textContent = `${value.toFixed(2)}×`;
+    if (els.absVolumeReadout) els.absVolumeReadout.textContent = `${value.toFixed(1)}×`;
   }
 
   function updateMediaSession(track = findTrack(state.currentTrackId)) {
@@ -1682,7 +1761,7 @@
     els.loopAlbumBtn.addEventListener('click', () => {
       state.repeatAlbum = !state.repeatAlbum;
       updateLoopButton();
-      toast(state.repeatAlbum ? 'Album loop enabled' : 'Album loop disabled');
+      toast(state.repeatAlbum ? 'Queue loop enabled' : 'Queue loop disabled');
     });
 
     els.seekSlider.addEventListener('input', () => {
@@ -1710,7 +1789,7 @@
         if (!track) return;
         const value = clamp(Number(els.absVolumeSlider.value) || 1, ABS_VOLUME_MIN, ABS_VOLUME_MAX);
         track.absVolume = value;
-        if (els.absVolumeReadout) els.absVolumeReadout.textContent = `${value.toFixed(2)}×`;
+        if (els.absVolumeReadout) els.absVolumeReadout.textContent = `${value.toFixed(1)}×`;
         await dbSet('tracks', track);
         updateMasterGain();
       });
@@ -1875,6 +1954,13 @@
   updateTimeUi();
   presetImages();
   els.miniPlayer.classList.add('hidden');
+
+  if (state.directAudioMode) {
+    const eqBlock = $('#eqBlock');
+    const volBlock = $('.volume-block');
+    if (eqBlock) eqBlock.style.display = 'none';
+    if (volBlock) volBlock.style.display = 'none';
+  }
 
   window.selectTrack = selectTrack;
   window.removeFromQueue = removeFromQueue;
