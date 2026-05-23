@@ -13,6 +13,7 @@
     sortKey: 'title',
     sortDir: 1,
     searchQuery: '',
+    albumSearchQuery: '',
     repeatAlbum: false,
     currentAlbumId: null,
     albumCoverIndex: new Map(),
@@ -26,7 +27,6 @@
   const ABS_VOLUME_MIN = 0.10;
   const ABS_VOLUME_MAX = 10;
   const ABS_VOLUME_STEP = 0.1;
-
 
   const els = {
     tabbar: $('#tabbar'),
@@ -48,6 +48,7 @@
     songsCount: $('#songsCount'),
     albumsCount: $('#albumsCount'),
     searchInput: $('#searchInput'),
+    albumSearchInput: $('#albumSearchInput'),
     folderNote: $('#folderNote'),
     playAllBtn: $('#playAllBtn'),
     shuffleAllBtn: $('#shuffleAllBtn'),
@@ -280,13 +281,38 @@
     }[key] || 'Title';
   }
 
+  const textCollator = new Intl.Collator(undefined, {
+    numeric: true,
+    sensitivity: 'base',
+    ignorePunctuation: true,
+  });
+
   function normalizeForSort(value) {
-    return sanitizeText(value).toLowerCase();
+    return sanitizeText(value).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  }
+
+  function normalizeForIdentity(value) {
+    return sanitizeText(value).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  function compareTextValues(a, b, dir = 1) {
+    return textCollator.compare(sanitizeText(a), sanitizeText(b)) * dir;
   }
 
   function normalizeAlbumLabel(value) {
     const label = sanitizeText(value);
     return label && label.toLowerCase() !== 'unknown album' ? label : 'Singles';
+  }
+
+  function legacyTrackSignature(track) {
+    return [
+      normalizeForIdentity(track?.title || track?.fileName || ''),
+      normalizeForIdentity(track?.artist || ''),
+      normalizeForIdentity(normalizeAlbumLabel(track?.album) || ''),
+      String(track?.year || ''),
+      String(Number(track?.trackNumber) || 0),
+      String(Math.round(Number(track?.duration) || 0)),
+    ].join('|');
   }
 
   function groupAlbums() {
@@ -312,7 +338,7 @@
     }
 
     for (const album of map.values()) {
-      album.tracks.sort((a, b) => (Number(a.trackNumber) || 0) - (Number(b.trackNumber) || 0) || (a.title || '').localeCompare(b.title || ''));
+      album.tracks.sort((a, b) => (Number(a.trackNumber) || 0) - (Number(b.trackNumber) || 0) || compareTextValues(a.title, b.title));
       const oldest = [...album.tracks].sort((a, b) => (a.dateAdded || 0) - (b.dateAdded || 0));
       album.coverTracks = oldest.filter((t) => t.coverDataUrl).map((t) => ({ id: t.id, coverDataUrl: t.coverDataUrl }));
       const years = album.tracks.map((t) => Number(t.year)).filter((n) => Number.isFinite(n) && n > 0);
@@ -341,7 +367,7 @@
         : key === 'year' ? (Number(b.year) || 0)
         : Number(b.dateAdded) || 0;
       if (typeof av === 'number' || typeof bv === 'number') return (av - bv) * dir;
-      return av.localeCompare(bv) * dir;
+      return compareTextValues(av, bv, dir);
     });
   }
 
@@ -349,16 +375,16 @@
     const dir = state.sortDir;
     const key = state.sortKey;
     return [...list].sort((a, b) => {
-      const av = key === 'artist' ? normalizeForSort(a.artist)
-        : key === 'album' ? normalizeForSort(a.album)
+      const av = key === 'title' || key === 'album' ? normalizeForSort(a.album)
+        : key === 'artist' ? normalizeForSort(a.artist)
         : key === 'year' ? (Number(a.year) || 0)
         : Number(a.dateAdded) || 0;
-      const bv = key === 'artist' ? normalizeForSort(b.artist)
-        : key === 'album' ? normalizeForSort(b.album)
+      const bv = key === 'title' || key === 'album' ? normalizeForSort(b.album)
+        : key === 'artist' ? normalizeForSort(b.artist)
         : key === 'year' ? (Number(b.year) || 0)
         : Number(b.dateAdded) || 0;
       if (typeof av === 'number' || typeof bv === 'number') return (av - bv) * dir;
-      return av.localeCompare(bv) * dir;
+      return compareTextValues(av, bv, dir);
     });
   }
 
@@ -542,13 +568,13 @@
   }
 
   function renderSongs() {
-    const items = sortTracks(getFilteredLibrary());
-    els.songsCount.textContent = `${items.length} song${items.length === 1 ? '' : 's'} in view`;
+    const items = sortTracks(state.library);
+    els.songsCount.textContent = `${items.length} song${items.length === 1 ? '' : 's'} in library`;
     renderLazyList(
-      els.songsList, 
-      items, 
-      (t) => songRowHTML(t), 
-      (nodes) => bindSongRows(nodes, items), 
+      els.songsList,
+      items,
+      (t) => songRowHTML(t),
+      (nodes) => bindSongRows(nodes, items),
       'No songs found.'
     );
   }
@@ -556,41 +582,41 @@
   function renderSearchResults() {
     const items = sortTracks(getFilteredLibrary());
     renderLazyList(
-      els.searchList, 
-      items, 
-      (t) => songRowHTML(t, { showRemove: true }), 
-      (nodes) => bindSongRows(nodes, items, null, { allowRemove: true }), 
+      els.searchList,
+      items,
+      (t) => songRowHTML(t, { showRemove: true }),
+      (nodes) => bindSongRows(nodes, items, null, { allowRemove: true }),
       'No matching songs yet.'
     );
   }
 
   function renderAlbums() {
-    const albums = sortAlbums(groupAlbums());
-    els.albumsCount.textContent = `${albums.length} album${albums.length === 1 ? '' : 's'} in library`;
+    const albums = sortAlbums(getFilteredAlbums());
+    els.albumsCount.textContent = `${albums.length} album${albums.length === 1 ? '' : 's'} in view`;
     renderLazyList(
-      els.albumsGrid, 
-      albums, 
-      (album) => albumCardHTML(album), 
+      els.albumsGrid,
+      albums,
+      (album) => albumCardHTML(album),
       (nodes) => {
         nodes.forEach(card => card.addEventListener('click', () => openAlbum(card.dataset.albumId)));
-      }, 
+      },
       'No albums found.'
     );
   }
 
   function renderAlbum(album) {
-    const tracks = [...album.tracks].sort((a, b) => (Number(a.trackNumber) || 0) - (Number(b.trackNumber) || 0) || (a.title || '').localeCompare(b.title || ''));
+    const tracks = [...album.tracks].sort((a, b) => (Number(a.trackNumber) || 0) - (Number(b.trackNumber) || 0) || compareTextValues(a.title, b.title));
     els.albumHeroArt.src = albumCoverFor(album);
     els.albumHeroTitle.textContent = album.album || 'Unknown Album';
     const artistLabel = album.artistList?.length > 1 ? album.artistList.join(' • ') : (album.artist || 'Unknown Artist');
     els.albumHeroMeta.textContent = `${artistLabel} • ${tracks.length} song${tracks.length === 1 ? '' : 's'}`;
     els.albumHeroArt.onclick = () => { cycleAlbumCover(album.id); };
-    
+
     renderLazyList(
-      els.albumSongsList, 
-      tracks, 
-      (t) => songRowHTML(t), 
-      (nodes) => bindSongRows(nodes, tracks, album.id), 
+      els.albumSongsList,
+      tracks,
+      (t) => songRowHTML(t),
+      (nodes) => bindSongRows(nodes, tracks, album.id),
       'No songs in this album.'
     );
   }
@@ -809,6 +835,22 @@
     });
   }
 
+  function getFilteredAlbums() {
+    const query = normalizeForSort(state.albumSearchQuery);
+    const albums = groupAlbums();
+    if (!query) return albums;
+    return albums.filter((album) => {
+      const hay = [
+        album.album,
+        album.artist,
+        album.year,
+        ...(album.artistList || []),
+        ...(album.tracks || []).map((t) => t.title),
+      ].map(normalizeForSort).join(' ');
+      return hay.includes(query);
+    });
+  }
+
   function currentSelectionQueue() {
     return getFilteredLibrary().map((t) => t.id);
   }
@@ -866,10 +908,17 @@
     renderMiniPlayer();
   }
 
+  async function resumePlaybackOutput() {
+    await ensureAudioGraph();
+    if (!state.directAudioMode && audioCtx && audioCtx.state === 'suspended') {
+      try { await audioCtx.resume(); } catch (err) { console.warn(err); }
+    }
+  }
+
   async function startPlayback() {
     const track = findTrack(state.currentTrackId);
     if (!track) return;
-    await ensureAudioGraph();
+    await resumePlaybackOutput();
     const url = await makeObjectUrl(track);
     if (!url) return;
     if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
@@ -877,9 +926,6 @@
     els.audio.src = url;
     els.audio.currentTime = 0;
     syncAudioVolume();
-    if (!state.directAudioMode && audioCtx && audioCtx.state === 'suspended') {
-      try { await audioCtx.resume(); } catch (err) { console.warn(err); }
-    }
     try {
       await els.audio.play();
     } catch (err) {
@@ -893,7 +939,6 @@
     updatePlayerView();
     renderQueue();
   }
-
 
   async function playTrackById(trackId) {
     if (!trackId) return;
@@ -915,8 +960,6 @@
     renderQueue();
     await startPlayback();
   }
-
-
 
   async function removeTrackFromLibrary(id) {
     const track = findTrack(id);
@@ -1042,7 +1085,7 @@
 
   async function togglePlayPause() {
     if (!state.currentTrackId) {
-      const ids = sortTracks(getFilteredLibrary()).map((t) => t.id);
+      const ids = sortTracks(state.library).map((t) => t.id);
       if (!ids.length) {
         toast('No songs to play');
         return;
@@ -1057,6 +1100,7 @@
         await startPlayback();
       } else {
         try {
+          await resumePlaybackOutput();
           await els.audio.play();
         } catch {
           await startPlayback();
@@ -1129,13 +1173,13 @@
     if (!state.queue.length) return;
 
     const finishedIndex = clamp(state.currentIndex, 0, Math.max(0, state.queue.length - 1));
-    if (state.queue.length) {
-      state.queue.splice(finishedIndex, 1);
-    }
+    const nextIndex = finishedIndex + 1;
+    const nextTrackId = state.queue[nextIndex];
 
-    if (state.queue.length) {
-      state.currentIndex = clamp(finishedIndex, 0, state.queue.length - 1);
-      state.currentTrackId = state.queue[state.currentIndex];
+    if (nextTrackId) {
+      state.queue.splice(finishedIndex, 1);
+      state.currentIndex = Math.min(finishedIndex, state.queue.length - 1);
+      state.currentTrackId = state.queue[state.currentIndex] || nextTrackId;
       renderAll();
       await startPlayback();
       return;
@@ -1184,11 +1228,11 @@
     node._t = setTimeout(() => node.classList.add('hidden'), 1700);
   }
 
-  async function parseMp3Metadata(file) {
-    const buffer = await file.arrayBuffer();
+  async function parseMp3Metadata(file, buffer = null) {
+    const sourceBuffer = buffer || await file.arrayBuffer();
     let parsed = { title: '', artist: '', album: '', year: '', trackNumber: 0, coverDataUrl: '', lyrics: '' };
     try {
-      parsed = parseID3(buffer);
+      parsed = parseID3(sourceBuffer);
     } catch (err) {
       console.warn('ID3 parse failed, falling back to filename metadata', err);
     }
@@ -1197,7 +1241,7 @@
     if (window.AudioContext || window.webkitAudioContext) {
       try {
         const ac = new (window.AudioContext || window.webkitAudioContext)();
-        const audioBuffer = await ac.decodeAudioData(buffer.slice(0));
+        const audioBuffer = await ac.decodeAudioData(sourceBuffer.slice(0));
         duration = audioBuffer.duration || 0;
         normGain = computeNormalizationGain(audioBuffer);
         await ac.close?.();
@@ -1240,11 +1284,35 @@
   }
 
   function decodeTextBytes(bytes, encoding = 3, keepNewlines = false) {
-    let text = '';
-    if (encoding === 0) text = new TextDecoder('iso-8859-1').decode(bytes);
-    else if (encoding === 1) text = decodeUtf16(bytes);
-    else if (encoding === 2) text = new TextDecoder('utf-16be').decode(bytes);
-    else text = new TextDecoder().decode(bytes);
+    const candidates = [];
+    const pushCandidate = (decoder) => {
+      try {
+        candidates.push(new TextDecoder(decoder).decode(bytes));
+      } catch {
+        // ignore unsupported decoder
+      }
+    };
+
+    if (encoding === 0) {
+      pushCandidate('utf-8');
+      pushCandidate('windows-1252');
+      pushCandidate('iso-8859-1');
+    } else if (encoding === 1) {
+      candidates.push(decodeUtf16(bytes));
+      pushCandidate('utf-16le');
+      pushCandidate('utf-16be');
+      pushCandidate('utf-8');
+    } else if (encoding === 2) {
+      pushCandidate('utf-16be');
+      pushCandidate('utf-16le');
+      pushCandidate('utf-8');
+    } else {
+      pushCandidate('utf-8');
+      pushCandidate('windows-1252');
+      pushCandidate('iso-8859-1');
+    }
+
+    let text = bestTextCandidate(candidates);
     text = text.replace(/\u0000+$/, '');
     text = text.replace(/\r\n?/g, '\n');
     if (!keepNewlines) text = text.trim();
@@ -1266,12 +1334,36 @@
     return [asLE, asBE];
   }
 
+  function scoreTextCandidate(text) {
+    const value = String(text || '').replace(/\u0000+/g, '').replace(/\r\n?/g, '\n').trim();
+    if (!value) return -Infinity;
+    const replacement = (value.match(/\uFFFD/g) || []).length;
+    const control = (value.match(/[\u0000-\u001F]/g) || []).length;
+    const letters = (value.match(/[A-Za-z]/g) || []).length;
+    const digits = (value.match(/[0-9]/g) || []).length;
+    return (letters * 3) + digits + value.length - (replacement * 15) - (control * 6);
+  }
+
+  function bestTextCandidate(candidates) {
+    let best = '';
+    let bestScore = -Infinity;
+    for (const candidate of candidates) {
+      const clean = String(candidate || '').replace(/\r\n?/g, '\n').replace(/^\s+|\s+$/g, '');
+      const score = scoreTextCandidate(clean);
+      if (score > bestScore) {
+        best = clean;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
   function scoreLyricsText(text) {
     const value = String(text || '').replace(/\u0000+/g, '');
     if (!value.trim()) return -Infinity;
     const ascii = (value.match(/[\x20-\x7E]/g) || []).length;
     const letters = (value.match(/[A-Za-z]/g) || []).length;
-    const words = (value.match(/\b[A-Za-z][A-Za-z'’-]*\b/g) || []).length;
+    const words = (value.match(/\b[A-Za-z][A-Za-z'’\-]*\b/g) || []).length;
     const lines = value.split('\n').length;
     const cjk = (value.match(/[\u3400-\u9FFF\uF900-\uFAFF]/g) || []).length;
     const weird = (value.match(/[\u0000-\u001F]/g) || []).length;
@@ -1299,6 +1391,20 @@
       binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
     }
     return btoa(binary);
+  }
+
+  function bytesToHex(bytes) {
+    return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function sha1Hex(buffer) {
+    const digest = await crypto.subtle.digest('SHA-1', buffer);
+    return bytesToHex(digest);
+  }
+
+  async function computeTrackDedupKey(track, fileBuffer = null) {
+    const hash = fileBuffer ? await sha1Hex(fileBuffer) : '';
+    return [hash, legacyTrackSignature(track)].filter(Boolean).join('|');
   }
 
   function decodeApic(frame) {
@@ -1444,10 +1550,11 @@
   }
 
   async function scanFile(file) {
-    const meta = await parseMp3Metadata(file);
+    const buffer = await file.arrayBuffer();
+    const meta = await parseMp3Metadata(file, buffer);
     const albumName = normalizeAlbumLabel(meta.album);
     const albumId = normalizeForSort(albumName) || 'singles';
-    return {
+    const track = {
       id: uid(),
       file,
       fileKey: fileKey(file),
@@ -1465,6 +1572,8 @@
       absVolume: 1,
       duration: meta.duration || 0,
     };
+    track.dedupeKey = await computeTrackDedupKey(track, buffer);
+    return track;
   }
 
   async function importFiles(files, { remember = false } = {}) {
@@ -1479,18 +1588,18 @@
       toast('No MP3 files found');
       return;
     }
-    const existing = new Set(state.library.map((t) => t.fileKey).filter(Boolean));
+    const existing = new Set(state.library.flatMap((t) => [t.dedupeKey, t.fileKey, legacyTrackSignature(t)].filter(Boolean)));
     const imported = [];
     let skipped = 0;
 
     for (const file of list) {
-      const key = fileKey(file);
-      if (existing.has(key)) {
+      const track = await scanFile(file);
+      const keys = [track.dedupeKey, track.fileKey, legacyTrackSignature(track)].filter(Boolean);
+      if (keys.some((key) => existing.has(key))) {
         skipped += 1;
         continue;
       }
-      const track = await scanFile(file);
-      existing.add(key);
+      keys.forEach((key) => existing.add(key));
       imported.push(track);
       state.library.push(track);
       await dbSet('tracks', track);
@@ -1574,11 +1683,28 @@
     try {
       state.library = await dbGetAll('tracks');
       let changed = false;
-      state.library = state.library.map((track) => {
+      const seen = new Set();
+      const normalized = [];
+      for (const track of state.library) {
         const album = normalizeAlbumLabel(track.album);
-        if (album !== track.album || typeof track.absVolume !== 'number') changed = true;
-        return { ...track, album, albumId: normalizeForSort(album) || 'singles', absVolume: Number(track.absVolume) || 1 };
-      });
+        const next = {
+          ...track,
+          album,
+          albumId: normalizeForSort(album) || 'singles',
+          absVolume: Number(track.absVolume) || 1,
+        };
+        if (!next.dedupeKey) next.dedupeKey = legacyTrackSignature(next);
+        const signature = next.dedupeKey || legacyTrackSignature(next);
+        if (seen.has(signature)) {
+          changed = true;
+          if (track?.id) await dbDelete('tracks', track.id);
+          continue;
+        }
+        seen.add(signature);
+        if (album !== track.album || typeof track.absVolume !== 'number' || next.dedupeKey !== track.dedupeKey) changed = true;
+        normalized.push(next);
+      }
+      state.library = normalized;
       if (changed) {
         for (const track of state.library) await dbSet('tracks', track);
       }
@@ -1695,7 +1821,7 @@
     });
 
     els.playAllBtn.addEventListener('click', async () => {
-      const ids = sortTracks(getFilteredLibrary()).map((t) => t.id);
+      const ids = sortTracks(state.library).map((t) => t.id);
       if (!ids.length) return toast('No songs to play');
       setQueue(ids, 0, 'songs');
       openPlayer();
@@ -1703,7 +1829,7 @@
     });
 
     els.shuffleAllBtn.addEventListener('click', async () => {
-      const ids = sortTracks(getFilteredLibrary()).map((t) => t.id);
+      const ids = sortTracks(state.library).map((t) => t.id);
       if (!ids.length) return toast('No songs to shuffle');
       fisherYates(ids);
       setQueue(ids, 0, 'songs');
@@ -1725,8 +1851,14 @@
     els.searchInput.addEventListener('input', () => {
       state.searchQuery = els.searchInput.value;
       renderSearchResults();
-      renderSongs();
     });
+
+    if (els.albumSearchInput) {
+      els.albumSearchInput.addEventListener('input', () => {
+        state.albumSearchQuery = els.albumSearchInput.value;
+        renderAlbums();
+      });
+    }
 
     els.albumBackBtn.addEventListener('click', () => displayTab('albums'));
 
@@ -1828,6 +1960,15 @@
       renderMiniPlayer();
       updateTimeUi();
     });
+
+    if (navigator.mediaDevices?.addEventListener) {
+      navigator.mediaDevices.addEventListener('devicechange', () => {
+        if (state.currentTrackId && !els.audio.paused) {
+          els.audio.pause();
+          toast('Playback paused after an audio device change');
+        }
+      });
+    }
 
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
