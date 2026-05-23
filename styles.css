@@ -457,7 +457,7 @@ input[type="range"] {
   border-radius: 22px;
   box-shadow: var(--shadow);
   display: grid;
-  grid-template-columns: auto auto 1fr auto;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
@@ -465,6 +465,7 @@ input[type="range"] {
   backdrop-filter: blur(18px);
   max-height: 82px;
   overflow: hidden;
+  cursor: pointer;
 }
 .mini-player img {
   width: 44px;
@@ -558,7 +559,7 @@ input[type="range"] {
     left: 14px;
     right: 14px;
     bottom: calc(78px + env(safe-area-inset-bottom));
-    grid-template-columns: auto auto 1fr auto;
+    grid-template-columns: auto 1fr auto;
     padding: 8px 10px;
     max-height: 70px;
   }
@@ -602,7 +603,6 @@ input[type="range"] {
   }
 }
 
-
 #miniPlayBtn {
   font-weight: 800;
   display: inline-grid;
@@ -611,5 +611,5 @@ input[type="range"] {
 }
 #miniPlayBtn.paused-glyph {
   transform: rotate(90deg) scale(1.06);
-  padding: 0 0 4px 0;
+  padding: 0 0 3px 2px;
 }
