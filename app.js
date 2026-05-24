@@ -1119,18 +1119,19 @@
     const track = findTrack(state.currentTrackId);
     if (!track) return;
 
-    // 1. Update MediaSession FIRST. 
-    // This tricks iOS into thinking a system-level media change is occurring, 
-    // helping to keep the background JavaScript thread awake longer.
-    updateMediaSession(track);
-
-    // 2. Create the new URL synchronously
-    const newObjectUrl = URL.createObjectURL(track.file);
-    els.audio.src = newObjectUrl;
+    if (currentObjectUrl) {
+      // Delay revoking the old URL. If we do it instantly, iOS memory 
+      // management can stutter the thread and expire the gesture token.
+      const urlToRevoke = currentObjectUrl;
+      setTimeout(() => URL.revokeObjectURL(urlToRevoke), 2000);
+    }
+    
+    currentObjectUrl = URL.createObjectURL(track.file);
+    els.audio.src = currentObjectUrl;
     els.audio.currentTime = 0;
     syncAudioVolume();
 
-    // 3. Play immediately to stay within the iOS user-interaction window
+    // SYNCHRONOUS PLAY
     const playPromise = els.audio.play();
     if (playPromise !== undefined) {
       playPromise.catch(err => {
@@ -1138,14 +1139,6 @@
         toast('Tap play again if playback was blocked');
       });
     }
-
-    // 4. Revoke the OLD url on a delay. 
-    // If we revoke it instantly, the browser's Garbage Collector can stutter the thread.
-    if (currentObjectUrl) {
-      const urlToRevoke = currentObjectUrl;
-      setTimeout(() => URL.revokeObjectURL(urlToRevoke), 2000);
-    }
-    currentObjectUrl = newObjectUrl;
 
     if (!state.directAudioMode) {
       ensureAudioGraph().then(() => {
@@ -1155,6 +1148,7 @@
       });
     }
 
+    updateMediaSession(track);
     renderMiniPlayer();
     updatePlayerView();
     renderQueue();
@@ -1295,14 +1289,21 @@
       openPlayer();
       return;
     }
+    
     if (els.audio.paused) {
-      if (!els.audio.src || state.currentTrackId && els.audio.src === '') {
+      if (!els.audio.src || els.audio.src === '') {
         startPlayback();
       } else {
-        if (!state.directAudioMode && audioCtx && audioCtx.state === 'suspended') {
-          audioCtx.resume();
+        // SYNCHRONOUS PLAY: No 'await' allowed here! iOS will block it.
+        const playPromise = els.audio.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(err => {
+            console.warn('Playback failed:', err);
+            startPlayback();
+          });
         }
-        els.audio.play().catch(() => startPlayback());
+        // Resume the audio graph in the background safely after play is triggered
+        resumePlaybackOutput().catch(console.warn);
       }
     } else {
       els.audio.pause();
