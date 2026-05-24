@@ -480,7 +480,9 @@ input[type="range"] {
 .queue-handle {
   color: var(--muted);
   cursor: grab;
-  padding: 0 4px;
+  padding: 10px 16px; 
+  margin-left: -10px;
+  touch-action: none; 
 }
 .queue-remove {
   background: rgba(221,128,128,.14);
