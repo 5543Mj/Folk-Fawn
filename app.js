@@ -1998,23 +1998,7 @@
       
       navigator.mediaSession.playbackState = els.audio.paused ? 'paused' : 'playing';
       
-      navigator.mediaSession.setActionHandler('play', () => {
-        // 1. Instantly wake up the Web Audio API context if it's suspended
-        if (audioCtx && audioCtx.state === 'suspended') {
-          audioCtx.resume();
-        }
-        
-        // 2. Play the audio element immediately in the exact same synchronous block
-        els.audio.play().then(() => {
-          // 3. Update the UI state only AFTER a successful play trigger
-          renderMiniPlayer();
-          updateMediaSession();
-          updateMediaSessionPosition();
-        }).catch(err => {
-          console.warn("Background resume blocked by iOS:", err);
-          togglePlayPause(); // Fallback to standard flow
-        });
-      });
+      navigator.mediaSession.setActionHandler('play', () => togglePlayPause());
       navigator.mediaSession.setActionHandler('pause', () => togglePlayPause());
       navigator.mediaSession.setActionHandler('previoustrack', () => goPrev());
       navigator.mediaSession.setActionHandler('nexttrack', () => goNext());
@@ -2041,87 +2025,6 @@
       console.warn('Media session update failed', err);
     }
   }
-
-  let mediaSessionBound = false;
-
-async function resumeFromMediaSession() {
-  const track = findTrack(state.currentTrackId);
-  if (!track) {
-    const ids = sortTracks(state.library).map((t) => t.id);
-    if (!ids.length) return;
-    setQueue(ids, 0, 'songs');
-  }
-
-  if (!els.audio.src) {
-    await startPlayback();
-    return;
-  }
-
-  if (!state.directAudioMode && audioCtx && audioCtx.state === 'suspended') {
-    try { await audioCtx.resume(); } catch {}
-  }
-
-  try {
-    await els.audio.play();
-  } catch (err) {
-    console.warn('Media-session play failed:', err);
-    await startPlayback();
-  }
-}
-
-function pauseFromMediaSession() {
-  els.audio.pause();
-}
-
-function updateMediaSession(track = findTrack(state.currentTrackId)) {
-  if (!('mediaSession' in navigator)) return;
-
-  try {
-    const cover = track?.coverDataUrl || DEFAULT_ART;
-
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: track?.title || 'Untitled',
-      artist: track?.artist || 'Unknown Artist',
-      album: track?.album || 'Unknown Album',
-      artwork: [
-        { src: cover, sizes: '96x96', type: 'image/png' },
-        { src: cover, sizes: '128x128', type: 'image/png' },
-        { src: cover, sizes: '192x192', type: 'image/png' },
-        { src: cover, sizes: '256x256', type: 'image/png' },
-        { src: cover, sizes: '384x384', type: 'image/png' },
-      ],
-    });
-
-    navigator.mediaSession.playbackState = els.audio.paused ? 'paused' : 'playing';
-
-    if (!mediaSessionBound) {
-      navigator.mediaSession.setActionHandler('play', () => { void resumeFromMediaSession(); });
-      navigator.mediaSession.setActionHandler('pause', () => { pauseFromMediaSession(); });
-      navigator.mediaSession.setActionHandler('previoustrack', () => { void goPrev(); });
-      navigator.mediaSession.setActionHandler('nexttrack', () => { void goNext(); });
-      navigator.mediaSession.setActionHandler('seekbackward', () => {
-        els.audio.currentTime = Math.max(0, els.audio.currentTime - 10);
-        updateMediaSessionPosition();
-      });
-      navigator.mediaSession.setActionHandler('seekforward', () => {
-        els.audio.currentTime = Math.min(els.audio.duration || 0, els.audio.currentTime + 10);
-        updateMediaSessionPosition();
-      });
-      navigator.mediaSession.setActionHandler('seekto', (details) => {
-        if (details.fastSeek && 'fastSeek' in els.audio) {
-          els.audio.fastSeek(details.seekTime);
-          return;
-        }
-        els.audio.currentTime = details.seekTime;
-        updateMediaSessionPosition();
-      });
-
-      mediaSessionBound = true;
-    }
-  } catch (err) {
-    console.warn('Media session update failed', err);
-  }
-}
 
   function openAlbumFromSong(trackId) {
     const track = findTrack(trackId);
