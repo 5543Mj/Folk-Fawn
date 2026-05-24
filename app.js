@@ -2426,6 +2426,16 @@
   }
 
   // Desktop HTML5 drag fallback
+  // Desktop HTML5 drag fallback
+  const desktopPlaceholder = document.createElement('article');
+  desktopPlaceholder.className = 'queue-row placeholder';
+  desktopPlaceholder.style.height = '4px';
+  desktopPlaceholder.style.background = 'var(--accent)';
+  desktopPlaceholder.style.border = 'none';
+  desktopPlaceholder.style.margin = '4px 0';
+  desktopPlaceholder.style.padding = '0';
+  desktopPlaceholder.style.minHeight = '0';
+
   function onQueueDragStart(e) {
     if (e.pointerType === 'touch') return; 
     queueDraggingId = e.currentTarget.dataset.trackId;
@@ -2436,26 +2446,47 @@
 
   function onQueueDragOver(e) {
     e.preventDefault();
-    queueDragOverId = e.currentTarget.dataset.trackId;
+    if (!queueDraggingId) return;
+    
+    // Find the row we are currently hovering over
+    const targetRow = e.target.closest('.queue-row:not(.placeholder):not(.dragging)');
+    if (!targetRow) return;
+
+    // Calculate if we are hovering over the top half or bottom half of the row
+    const rect = targetRow.getBoundingClientRect();
+    if (e.clientY < rect.top + rect.height / 2) {
+      targetRow.parentNode.insertBefore(desktopPlaceholder, targetRow);
+    } else {
+      targetRow.parentNode.insertBefore(desktopPlaceholder, targetRow.nextSibling);
+    }
   }
 
   function onQueueDrop(e) {
     e.preventDefault();
-    const targetId = e.currentTarget.dataset.trackId;
-    if (!queueDraggingId || !targetId || queueDraggingId === targetId) return;
-    const from = state.queue.indexOf(queueDraggingId);
-    const to = state.queue.indexOf(targetId);
-    if (from < 0 || to < 0) return;
-    const [moved] = state.queue.splice(from, 1);
-    state.queue.splice(to, 0, moved);
+    if (!queueDraggingId) return;
+    
+    // Move the actual row to where the placeholder is
+    const draggedRow = els.queueList.querySelector(`[data-track-id="${queueDraggingId}"]`);
+    if (draggedRow && desktopPlaceholder.parentNode) {
+      els.queueList.insertBefore(draggedRow, desktopPlaceholder);
+    }
+    
+    desktopPlaceholder.remove();
+    
+    // Save the new order to the database
+    const newQueueIds = Array.from(els.queueList.querySelectorAll('.queue-row:not(.placeholder)'))
+      .map(r => r.dataset.trackId)
+      .filter(Boolean);
+
+    state.queue = newQueueIds;
     state.currentIndex = state.queue.indexOf(state.currentTrackId);
     renderQueue();
   }
 
   function onQueueDragEnd(e) {
     e.currentTarget.classList.remove('dragging');
+    if (desktopPlaceholder.parentNode) desktopPlaceholder.remove();
     queueDraggingId = null;
-    queueDragOverId = null;
   }
 
   function renderLibraryState() {
