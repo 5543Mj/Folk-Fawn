@@ -21,6 +21,7 @@
       </div>
       <button class="tab-btn active" data-tab="songs" aria-current="page">Songs</button>
       <button class="tab-btn" data-tab="albums">Albums</button>
+      <button class="tab-btn" data-tab="authors">Artists</button>
       <button class="tab-btn" data-tab="search">Search</button>
     </aside>
 
@@ -59,7 +60,6 @@
       <section id="albumsView" class="view">
         <div class="section-head">
           <div>
-            <h2>Albums</h2>
             <p class="subtle" id="albumsCount">No albums loaded yet.</p>
           </div>
         </div>
@@ -69,18 +69,52 @@
         </label>
         <div class="album-grid" id="albumsGrid"></div>
       </section>
+      
+      <section id="authorsView" class="view">
+        <div class="section-head">
+          <div>
+            <p class="subtle" id="authorsCount">No artists loaded yet.</p>
+          </div>
+        </div>
+        <label class="search-box">
+          <span>Search artists</span>
+          <input id="authorSearchInput" type="search" placeholder="Artist name" />
+        </label>
+        <div class="album-grid" id="authorsGrid"></div>
+      </section>
+
+      <section id="authorView" class="view album-view">
+        <button class="back-btn" id="authorBackBtn">← Back</button>
+        <div class="album-hero">
+          <img id="authorHeroArt" class="hero-art large" alt="Artist art" />
+          <div class="album-hero-meta">
+            <p class="eyebrow">Artist</p>
+            <h2 id="authorHeroTitle">Artist</h2>
+            <p class="subtle" id="authorHeroMeta"></p>
+          </div>
+        </div>
+        <div class="section-head compact-head">
+          <div>
+            <h3>Songs</h3>
+          </div>
+          <div class="row-actions">
+            <button class="primary-btn" id="playAuthorBtn">Play All</button>
+            <button class="secondary-btn" id="shuffleAuthorBtn">Shuffle</button>
+          </div>
+        </div>
+        <div class="list" id="authorSongsList"></div>
+      </section>
 
       <section id="searchView" class="view">
         <div class="section-head stack-mobile">
           <div>
-            <h2>Search</h2>
             <p class="subtle">Find tracks, import files, or point the app at your music folder.</p>
           </div>
           <div class="row-actions wrap">
             <button class="primary-btn" id="pickFolderBtn">Choose Music Folder</button>
             <button class="secondary-btn" id="importFilesBtn">Import MP3 Files</button>
-            <input id="fileInput" type="file" accept="audio/mpeg,.mp3,.mpeg" multiple hidden />
-            <input id="folderInput" type="file" accept="audio/mpeg,.mp3,.mpeg" multiple webkitdirectory hidden />
+            <input id="fileInput" type="file" accept="audio/*,.mp3,.mpeg,.m4a,.aac,.wav,.ogg,.flac,.webm,.mp4" multiple hidden />
+            <input id="folderInput" type="file" accept="audio/*,.mp3,.mpeg,.m4a,.aac,.wav,.ogg,.flac,.webm,.mp4" multiple webkitdirectory hidden />
           </div>
         </div>
 
@@ -174,8 +208,8 @@
     <section id="miniPlayer" class="mini-player hidden" aria-label="Mini player">
       <img id="miniArt" alt="" />
       <div class="mini-info" id="miniInfo">
-        <strong id="miniTitle">Nothing playing</strong>
-        <span id="miniArtist"></span>
+        <strong id="miniTitle" class="scrolling-text-source" data-scroll-text="Nothing playing">Nothing playing</strong>
+        <span id="miniArtist" class="scrolling-text-source" data-scroll-text=""></span>
       </div>
       <div class="mini-controls">
         <button id="miniPrevBtn" title="Previous">«</button>
