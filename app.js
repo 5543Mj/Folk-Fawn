@@ -1114,20 +1114,23 @@
     renderMiniPlayer();
   }
 
-  // NOTE: This function is now completely synchronous to bypass iOS background limitations.
+  // NOTE: iOS Background Freeze Bypass applied here
   function startPlayback() {
     const track = findTrack(state.currentTrackId);
     if (!track) return;
 
-    if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
-    
-    // Creating the object URL is synchronous
-    currentObjectUrl = URL.createObjectURL(track.file);
-    els.audio.src = currentObjectUrl;
+    // 1. Update MediaSession FIRST. 
+    // This tricks iOS into thinking a system-level media change is occurring, 
+    // helping to keep the background JavaScript thread awake longer.
+    updateMediaSession(track);
+
+    // 2. Create the new URL synchronously
+    const newObjectUrl = URL.createObjectURL(track.file);
+    els.audio.src = newObjectUrl;
     els.audio.currentTime = 0;
     syncAudioVolume();
 
-    // Calling play immediately without ANY async await keeps us inside the user-action / ended-event timeframe
+    // 3. Play immediately to stay within the iOS user-interaction window
     const playPromise = els.audio.play();
     if (playPromise !== undefined) {
       playPromise.catch(err => {
@@ -1136,8 +1139,15 @@
       });
     }
 
+    // 4. Revoke the OLD url on a delay. 
+    // If we revoke it instantly, the browser's Garbage Collector can stutter the thread.
+    if (currentObjectUrl) {
+      const urlToRevoke = currentObjectUrl;
+      setTimeout(() => URL.revokeObjectURL(urlToRevoke), 2000);
+    }
+    currentObjectUrl = newObjectUrl;
+
     if (!state.directAudioMode) {
-      // Defer AudioGraph setup on desktop so it doesn't block the instant .play()
       ensureAudioGraph().then(() => {
         if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
         updateMasterGain();
@@ -1145,10 +1155,10 @@
       });
     }
 
-    updateMediaSession(track);
     renderMiniPlayer();
     updatePlayerView();
     renderQueue();
+    updateMediaSessionPosition();
   }
 
   function playTrackById(trackId) {
