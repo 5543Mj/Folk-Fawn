@@ -1119,19 +1119,18 @@
     const track = findTrack(state.currentTrackId);
     if (!track) return;
 
-    if (currentObjectUrl) {
-      // Delay revoking the old URL. If we do it instantly, iOS memory 
-      // management can stutter the thread and expire the gesture token.
-      const urlToRevoke = currentObjectUrl;
-      setTimeout(() => URL.revokeObjectURL(urlToRevoke), 2000);
-    }
-    
-    currentObjectUrl = URL.createObjectURL(track.file);
-    els.audio.src = currentObjectUrl;
+    // 1. Update MediaSession FIRST. 
+    // This tricks iOS into thinking a system-level media change is occurring, 
+    // helping to keep the background JavaScript thread awake longer.
+    updateMediaSession(track);
+
+    // 2. Create the new URL synchronously
+    const newObjectUrl = URL.createObjectURL(track.file);
+    els.audio.src = newObjectUrl;
     els.audio.currentTime = 0;
     syncAudioVolume();
 
-    // SYNCHRONOUS PLAY
+    // 3. Play immediately to stay within the iOS user-interaction window
     const playPromise = els.audio.play();
     if (playPromise !== undefined) {
       playPromise.catch(err => {
@@ -1139,6 +1138,14 @@
         toast('Tap play again if playback was blocked');
       });
     }
+
+    // 4. Revoke the OLD url on a delay. 
+    // If we revoke it instantly, the browser's Garbage Collector can stutter the thread.
+    if (currentObjectUrl) {
+      const urlToRevoke = currentObjectUrl;
+      setTimeout(() => URL.revokeObjectURL(urlToRevoke), 2000);
+    }
+    currentObjectUrl = newObjectUrl;
 
     if (!state.directAudioMode) {
       ensureAudioGraph().then(() => {
@@ -1148,7 +1155,6 @@
       });
     }
 
-    updateMediaSession(track);
     renderMiniPlayer();
     updatePlayerView();
     renderQueue();
@@ -1289,21 +1295,14 @@
       openPlayer();
       return;
     }
-    
     if (els.audio.paused) {
-      if (!els.audio.src || els.audio.src === '') {
+      if (!els.audio.src || state.currentTrackId && els.audio.src === '') {
         startPlayback();
       } else {
-        // SYNCHRONOUS PLAY: No 'await' allowed here! iOS will block it.
-        const playPromise = els.audio.play();
-        if (playPromise !== undefined) {
-          playPromise.catch(err => {
-            console.warn('Playback failed:', err);
-            startPlayback();
-          });
+        if (!state.directAudioMode && audioCtx && audioCtx.state === 'suspended') {
+          audioCtx.resume();
         }
-        // Resume the audio graph in the background safely after play is triggered
-        resumePlaybackOutput().catch(console.warn);
+        els.audio.play().catch(() => startPlayback());
       }
     } else {
       els.audio.pause();
@@ -1980,43 +1979,149 @@
     if (els.absVolumeReadout) els.absVolumeReadout.textContent = `${value.toFixed(1)}×`;
   }
 
-  function updateMediaSession(track) {
+  function updateMediaSession(track = findTrack(state.currentTrackId)) {
     if (!('mediaSession' in navigator)) return;
+    try {
+      const cover = track?.coverDataUrl || DEFAULT_ART;
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: track?.title || 'Untitled',
+        artist: track?.artist || 'Unknown Artist',
+        album: track?.album || 'Unknown Album',
+        artwork: [
+          { src: cover, sizes: '96x96', type: 'image/png' },
+          { src: cover, sizes: '128x128', type: 'image/png' },
+          { src: cover, sizes: '192x192', type: 'image/png' },
+          { src: cover, sizes: '256x256', type: 'image/png' },
+          { src: cover, sizes: '384x384', type: 'image/png' },
+        ],
+      });
+      
+      navigator.mediaSession.playbackState = els.audio.paused ? 'paused' : 'playing';
+      
+      navigator.mediaSession.setActionHandler('play', () => {
+        // 1. Instantly wake up the Web Audio API context if it's suspended
+        if (audioCtx && audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+        
+        // 2. Play the audio element immediately in the exact same synchronous block
+        els.audio.play().then(() => {
+          // 3. Update the UI state only AFTER a successful play trigger
+          renderMiniPlayer();
+          updateMediaSession();
+          updateMediaSessionPosition();
+        }).catch(err => {
+          console.warn("Background resume blocked by iOS:", err);
+          togglePlayPause(); // Fallback to standard flow
+        });
+      });
+      navigator.mediaSession.setActionHandler('pause', () => togglePlayPause());
+      navigator.mediaSession.setActionHandler('previoustrack', () => goPrev());
+      navigator.mediaSession.setActionHandler('nexttrack', () => goNext());
+      
+      navigator.mediaSession.setActionHandler('seekbackward', () => { 
+        els.audio.currentTime = Math.max(0, els.audio.currentTime - 10); 
+        updateMediaSessionPosition(); 
+      });
+      navigator.mediaSession.setActionHandler('seekforward', () => { 
+        els.audio.currentTime = Math.min(els.audio.duration || 0, els.audio.currentTime + 10); 
+        updateMediaSessionPosition(); 
+      });
+      
+      navigator.mediaSession.setActionHandler('seekto', (details) => {
+        if (details.fastSeek && 'fastSeek' in els.audio) {
+          els.audio.fastSeek(details.seekTime);
+          return;
+        }
+        els.audio.currentTime = details.seekTime;
+        updateMediaSessionPosition();
+      });
 
-    // 1. Set Metadata
+    } catch (err) {
+      console.warn('Media session update failed', err);
+    }
+  }
+
+  let mediaSessionBound = false;
+
+async function resumeFromMediaSession() {
+  const track = findTrack(state.currentTrackId);
+  if (!track) {
+    const ids = sortTracks(state.library).map((t) => t.id);
+    if (!ids.length) return;
+    setQueue(ids, 0, 'songs');
+  }
+
+  if (!els.audio.src) {
+    await startPlayback();
+    return;
+  }
+
+  if (!state.directAudioMode && audioCtx && audioCtx.state === 'suspended') {
+    try { await audioCtx.resume(); } catch {}
+  }
+
+  try {
+    await els.audio.play();
+  } catch (err) {
+    console.warn('Media-session play failed:', err);
+    await startPlayback();
+  }
+}
+
+function pauseFromMediaSession() {
+  els.audio.pause();
+}
+
+function updateMediaSession(track = findTrack(state.currentTrackId)) {
+  if (!('mediaSession' in navigator)) return;
+
+  try {
+    const cover = track?.coverDataUrl || DEFAULT_ART;
+
     navigator.mediaSession.metadata = new MediaMetadata({
-      title: track.title || 'Unknown Title',
-      artist: track.artist || 'Unknown Artist',
-      album: track.album || '',
+      title: track?.title || 'Untitled',
+      artist: track?.artist || 'Unknown Artist',
+      album: track?.album || 'Unknown Album',
       artwork: [
-        { src: 'img/lier-192.png', sizes: '192x192', type: 'image/png' }
-      ]
+        { src: cover, sizes: '96x96', type: 'image/png' },
+        { src: cover, sizes: '128x128', type: 'image/png' },
+        { src: cover, sizes: '192x192', type: 'image/png' },
+        { src: cover, sizes: '256x256', type: 'image/png' },
+        { src: cover, sizes: '384x384', type: 'image/png' },
+      ],
     });
 
-    // 2. Set State
     navigator.mediaSession.playbackState = els.audio.paused ? 'paused' : 'playing';
 
-    // 3. FORCE-BIND HANDLERS (The Fix)
-    // We bind these immediately here so they are fresh for the OS
-    navigator.mediaSession.setActionHandler('play', () => {
-      // Must be purely synchronous to avoid OS rejection
-      if (els.audio.paused) {
-        els.audio.play().catch(e => console.warn(e));
-        // Only trigger the visual updates, keep audio logic out of the way
-        navigator.mediaSession.playbackState = 'playing';
-      }
-    });
+    if (!mediaSessionBound) {
+      navigator.mediaSession.setActionHandler('play', () => { void resumeFromMediaSession(); });
+      navigator.mediaSession.setActionHandler('pause', () => { pauseFromMediaSession(); });
+      navigator.mediaSession.setActionHandler('previoustrack', () => { void goPrev(); });
+      navigator.mediaSession.setActionHandler('nexttrack', () => { void goNext(); });
+      navigator.mediaSession.setActionHandler('seekbackward', () => {
+        els.audio.currentTime = Math.max(0, els.audio.currentTime - 10);
+        updateMediaSessionPosition();
+      });
+      navigator.mediaSession.setActionHandler('seekforward', () => {
+        els.audio.currentTime = Math.min(els.audio.duration || 0, els.audio.currentTime + 10);
+        updateMediaSessionPosition();
+      });
+      navigator.mediaSession.setActionHandler('seekto', (details) => {
+        if (details.fastSeek && 'fastSeek' in els.audio) {
+          els.audio.fastSeek(details.seekTime);
+          return;
+        }
+        els.audio.currentTime = details.seekTime;
+        updateMediaSessionPosition();
+      });
 
-    navigator.mediaSession.setActionHandler('pause', () => {
-      // Must be purely synchronous
-      els.audio.pause();
-      navigator.mediaSession.playbackState = 'paused';
-    });
-    
-    // Optional: handle next/prev if you have them
-    navigator.mediaSession.setActionHandler('previoustrack', goPrev);
-    navigator.mediaSession.setActionHandler('nexttrack', goNext);
+      mediaSessionBound = true;
+    }
+  } catch (err) {
+    console.warn('Media session update failed', err);
   }
+}
 
   function openAlbumFromSong(trackId) {
     const track = findTrack(trackId);
