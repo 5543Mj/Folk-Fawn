@@ -424,7 +424,7 @@ input[type="range"] {
   align-items: center;
   width: max-content;
   min-width: 100%;
-  gap: 2rem;
+  gap: 0; /* Changed from 2rem */
   will-change: transform;
   animation: scrolling-text-marquee var(--scroll-duration, 12s) linear infinite;
 }
@@ -432,6 +432,7 @@ input[type="range"] {
 .scrolling-text--active .scrolling-text__item {
   flex: 0 0 auto;
   white-space: nowrap;
+  padding-right: 2rem; /* The padding replaces the gap for perfect math */
 }
 
 @keyframes scrolling-text-marquee {
