@@ -596,7 +596,6 @@
     toast('Cover art changed for this view');
   }
 
-  // --- MARQUEE TEXT ENGINE ---
   function checkMarquees() {
     marqueeElements.forEach((el) => {
       if (!document.body.contains(el)) {
@@ -623,7 +622,6 @@
     setTimeout(checkMarquees, 10);
   }
 
-  // --- LAZY LIST RENDERING ENGINE ---
   function renderLazyList(container, items, renderHtmlFn, bindNodesFn, emptyText) {
     if (!container) return;
     if (listObservers.has(container)) {
@@ -790,9 +788,9 @@
             e.stopPropagation();
             removeFromQueue(row.dataset.trackId);
           });
-          if (play) play.addEventListener('click', async (e) => {
+          if (play) play.addEventListener('click', (e) => {
             e.stopPropagation();
-            await playTrackById(row.dataset.trackId);
+            playTrackById(row.dataset.trackId);
           });
         });
       }, 
@@ -814,7 +812,6 @@
     
     els.miniPlayBtn.textContent = els.audio.paused ? '▶' : '=';
     els.miniPlayBtn.classList.toggle('paused-glyph', !els.audio.paused);
-    updateMediaSession(track);
   }
 
   function updatePlayerView() {
@@ -863,6 +860,18 @@
     els.timeNow.textContent = formatTime(current);
     els.timeEnd.textContent = formatTime(duration);
     els.seekSlider.value = duration ? Math.round((current / duration) * 1000) : 0;
+  }
+
+  function updateMediaSessionPosition() {
+    if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
+    const duration = els.audio.duration || 0;
+    const playbackRate = els.audio.playbackRate || 1;
+    const position = els.audio.currentTime || 0;
+    if (duration > 0 && position >= 0 && position <= duration) {
+      try {
+        navigator.mediaSession.setPositionState({ duration, playbackRate, position });
+      } catch (e) { /* ignore */ }
+    }
   }
 
   function songRowHTML(track, { showRemove = false } = {}) {
@@ -1105,39 +1114,44 @@
     renderMiniPlayer();
   }
 
-  async function resumePlaybackOutput() {
-    await ensureAudioGraph();
-    if (!state.directAudioMode && audioCtx && audioCtx.state === 'suspended') {
-      try { await audioCtx.resume(); } catch (err) { console.warn(err); }
-    }
-  }
-
-  async function startPlayback() {
+  // NOTE: This function is now completely synchronous to bypass iOS background limitations.
+  function startPlayback() {
     const track = findTrack(state.currentTrackId);
     if (!track) return;
-    await resumePlaybackOutput();
-    const url = await makeObjectUrl(track);
-    if (!url) return;
+
     if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
-    currentObjectUrl = url;
-    els.audio.src = url;
+    
+    // Creating the object URL is synchronous
+    currentObjectUrl = URL.createObjectURL(track.file);
+    els.audio.src = currentObjectUrl;
     els.audio.currentTime = 0;
     syncAudioVolume();
-    try {
-      await els.audio.play();
-    } catch (err) {
-      console.warn(err);
-      toast('Tap play again if playback was blocked');
+
+    // Calling play immediately without ANY async await keeps us inside the user-action / ended-event timeframe
+    const playPromise = els.audio.play();
+    if (playPromise !== undefined) {
+      playPromise.catch(err => {
+        console.warn(err);
+        toast('Tap play again if playback was blocked');
+      });
     }
-    updateMasterGain();
-    applyEQ();
+
+    if (!state.directAudioMode) {
+      // Defer AudioGraph setup on desktop so it doesn't block the instant .play()
+      ensureAudioGraph().then(() => {
+        if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+        updateMasterGain();
+        applyEQ();
+      });
+    }
+
     updateMediaSession(track);
     renderMiniPlayer();
     updatePlayerView();
     renderQueue();
   }
 
-  async function playTrackById(trackId) {
+  function playTrackById(trackId) {
     if (!trackId) return;
     const idx = state.queue.indexOf(trackId);
     if (idx >= 0) {
@@ -1155,7 +1169,7 @@
     openPlayer();
     renderMiniPlayer();
     renderQueue();
-    await startPlayback();
+    startPlayback();
   }
 
   async function removeTrackFromLibrary(id) {
@@ -1168,7 +1182,7 @@
       state.currentTrackId = next || null;
       state.currentIndex = state.currentTrackId ? state.queue.indexOf(state.currentTrackId) : -1;
       if (state.currentTrackId) {
-        await startPlayback();
+        startPlayback();
       } else {
         els.audio.pause();
         els.audio.removeAttribute('src');
@@ -1182,11 +1196,6 @@
     await dbDelete('tracks', id);
     renderAll();
     toast('Song removed');
-  }
-
-  async function makeObjectUrl(track) {
-    if (!track?.file) return null;
-    return URL.createObjectURL(track.file);
   }
 
   async function ensureAudioGraph() {
@@ -1264,7 +1273,7 @@
     trebleFilter.gain.value = Number(els.trebleSlider.value);
   }
 
-  async function togglePlayPause() {
+  function togglePlayPause() {
     if (!state.currentTrackId) {
       const ids = sortTracks(state.library).map((t) => t.id);
       if (!ids.length) {
@@ -1272,20 +1281,18 @@
         return;
       }
       setQueue(ids, 0, 'songs');
-      await startPlayback();
+      startPlayback();
       openPlayer();
       return;
     }
     if (els.audio.paused) {
       if (!els.audio.src || state.currentTrackId && els.audio.src === '') {
-        await startPlayback();
+        startPlayback();
       } else {
-        try {
-          await resumePlaybackOutput();
-          await els.audio.play();
-        } catch {
-          await startPlayback();
+        if (!state.directAudioMode && audioCtx && audioCtx.state === 'suspended') {
+          audioCtx.resume();
         }
+        els.audio.play().catch(() => startPlayback());
       }
     } else {
       els.audio.pause();
@@ -1350,7 +1357,7 @@
     toast('Queue reshuffled');
   }
 
-  async function goNext() {
+  function goNext() {
     if (!state.queue.length) return;
 
     const finishedIndex = clamp(state.currentIndex, 0, Math.max(0, state.queue.length - 1));
@@ -1362,7 +1369,7 @@
       state.currentIndex = Math.min(finishedIndex, state.queue.length - 1);
       state.currentTrackId = state.queue[state.currentIndex] || nextTrackId;
       renderAll();
-      await startPlayback();
+      startPlayback();
       return;
     }
 
@@ -1372,7 +1379,7 @@
       const ids = album.tracks.map((t) => t.id);
       setQueue(ids, 0, 'album', state.currentAlbumId);
       renderAll();
-      await startPlayback();
+      startPlayback();
       return;
     }
 
@@ -1382,7 +1389,7 @@
     renderAll();
   }
 
-  async function goPrev() {
+  function goPrev() {
     if (!state.queue.length) return;
     if (els.audio.currentTime > 3) {
       els.audio.currentTime = 0;
@@ -1392,7 +1399,7 @@
       state.currentIndex -= 1;
       state.currentTrackId = state.queue[state.currentIndex];
       renderAll();
-      await startPlayback();
+      startPlayback();
     }
   }
 
@@ -1978,18 +1985,32 @@
           { src: cover, sizes: '384x384', type: 'image/png' },
         ],
       });
+      
       navigator.mediaSession.playbackState = els.audio.paused ? 'paused' : 'playing';
-      const handlers = {
-        play: () => togglePlayPause(),
-        pause: () => togglePlayPause(),
-        previoustrack: () => goPrev(),
-        nexttrack: () => goNext(),
-        seekbackward: () => { els.audio.currentTime = Math.max(0, (els.audio.currentTime || 0) - 10); },
-        seekforward: () => { els.audio.currentTime = Math.min(els.audio.duration || 0, (els.audio.currentTime || 0) + 10); },
-      };
-      Object.entries(handlers).forEach(([key, fn]) => {
-        try { navigator.mediaSession.setActionHandler(key, fn); } catch {}
+      
+      navigator.mediaSession.setActionHandler('play', () => togglePlayPause());
+      navigator.mediaSession.setActionHandler('pause', () => togglePlayPause());
+      navigator.mediaSession.setActionHandler('previoustrack', () => goPrev());
+      navigator.mediaSession.setActionHandler('nexttrack', () => goNext());
+      
+      navigator.mediaSession.setActionHandler('seekbackward', () => { 
+        els.audio.currentTime = Math.max(0, els.audio.currentTime - 10); 
+        updateMediaSessionPosition(); 
       });
+      navigator.mediaSession.setActionHandler('seekforward', () => { 
+        els.audio.currentTime = Math.min(els.audio.duration || 0, els.audio.currentTime + 10); 
+        updateMediaSessionPosition(); 
+      });
+      
+      navigator.mediaSession.setActionHandler('seekto', (details) => {
+        if (details.fastSeek && 'fastSeek' in els.audio) {
+          els.audio.fastSeek(details.seekTime);
+          return;
+        }
+        els.audio.currentTime = details.seekTime;
+        updateMediaSessionPosition();
+      });
+
     } catch (err) {
       console.warn('Media session update failed', err);
     }
@@ -2007,6 +2028,112 @@
     if (!track) return;
     displayTab('authors');
     openAuthor(normalizeForSort(track.artist) || 'unknown');
+  }
+
+  function bindTouchQueueDrag() {
+    let activeDrag = null;
+    let longPressTimer = null;
+
+    function startDrag(row, e) {
+      const rect = row.getBoundingClientRect();
+      activeDrag = {
+        row,
+        startY: e.type.includes('touch') ? e.touches[0].clientY : e.clientY,
+        startTop: rect.top,
+        placeholder: document.createElement('article')
+      };
+      
+      // Clean glowing insert line
+      activeDrag.placeholder.className = 'queue-row placeholder';
+      activeDrag.placeholder.style.height = `4px`; 
+      activeDrag.placeholder.style.background = 'var(--accent)';
+      activeDrag.placeholder.style.border = 'none';
+      activeDrag.placeholder.style.margin = '4px 0';
+      activeDrag.placeholder.style.padding = '0';
+      activeDrag.placeholder.style.minHeight = '0';
+
+      row.parentNode.insertBefore(activeDrag.placeholder, row);
+      row.style.position = 'fixed';
+      row.style.top = `${rect.top}px`;
+      row.style.left = `${rect.left}px`;
+      row.style.width = `${rect.width}px`;
+      row.style.zIndex = '100';
+      row.style.boxShadow = '0 10px 20px rgba(0,0,0,0.5)';
+      row.style.transition = 'none';
+      row.classList.add('dragging');
+    }
+
+    els.queueList.addEventListener('touchstart', (e) => {
+      const handle = e.target.closest('.queue-handle');
+      const row = e.target.closest('.queue-row');
+      if (!row) return;
+
+      if (handle) {
+        e.preventDefault();
+        startDrag(row, e);
+      } else {
+        longPressTimer = setTimeout(() => {
+          longPressTimer = null;
+          startDrag(row, e);
+        }, 400); // Trigger long press drag after 400ms
+      }
+    }, { passive: false });
+
+    els.queueList.addEventListener('touchmove', (e) => {
+      if (longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+      if (!activeDrag) return;
+      e.preventDefault();
+
+      const y = e.touches[0].clientY;
+      const dy = y - activeDrag.startY;
+      activeDrag.row.style.top = `${activeDrag.startTop + dy}px`; // Vertical drag only
+
+      const siblings = Array.from(els.queueList.querySelectorAll('.queue-row:not(.placeholder):not(.dragging)'));
+      const sibling = siblings.find(s => {
+        const sRect = s.getBoundingClientRect();
+        return y > sRect.top && y < sRect.bottom;
+      });
+
+      if (sibling) {
+        const sRect = sibling.getBoundingClientRect();
+        if (y < sRect.top + sRect.height / 2) {
+          els.queueList.insertBefore(activeDrag.placeholder, sibling);
+        } else {
+          els.queueList.insertBefore(activeDrag.placeholder, sibling.nextSibling);
+        }
+      }
+    }, { passive: false });
+
+    els.queueList.addEventListener('touchend', (e) => {
+      if (longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+      if (!activeDrag) return;
+
+      activeDrag.row.style.position = '';
+      activeDrag.row.style.top = '';
+      activeDrag.row.style.left = '';
+      activeDrag.row.style.width = '';
+      activeDrag.row.style.zIndex = '';
+      activeDrag.row.style.boxShadow = '';
+      activeDrag.row.classList.remove('dragging');
+
+      els.queueList.insertBefore(activeDrag.row, activeDrag.placeholder);
+      activeDrag.placeholder.remove();
+
+      const newQueueIds = Array.from(els.queueList.querySelectorAll('.queue-row:not(.placeholder)'))
+        .map(r => r.dataset.trackId)
+        .filter(Boolean);
+
+      state.queue = newQueueIds;
+      state.currentIndex = state.queue.indexOf(state.currentTrackId);
+      renderQueue(); 
+      activeDrag = null;
+    });
   }
 
   function bindEvents() {
@@ -2039,7 +2166,7 @@
       if (!ids.length) return toast('No songs to play');
       setQueue(ids, 0, 'songs');
       openPlayer();
-      await startPlayback();
+      startPlayback();
     });
 
     els.shuffleAllBtn.addEventListener('click', async () => {
@@ -2048,7 +2175,7 @@
       fisherYates(ids);
       setQueue(ids, 0, 'songs');
       openPlayer();
-      await startPlayback();
+      startPlayback();
     });
 
     els.pickFolderBtn.addEventListener('click', chooseFolder);
@@ -2090,7 +2217,7 @@
       const ids = [...album.tracks].sort((a, b) => (Number(a.trackNumber) || 0) - (Number(b.trackNumber) || 0) || compareTextValues(a.title, b.title)).map((t) => t.id);
       setQueue(ids, 0, 'album', album.id);
       openPlayer();
-      await startPlayback();
+      startPlayback();
     });
 
     els.shuffleAlbumBtn.addEventListener('click', async () => {
@@ -2100,7 +2227,7 @@
       fisherYates(ids);
       setQueue(ids, 0, 'album', album.id);
       openPlayer();
-      await startPlayback();
+      startPlayback();
     });
 
     if (els.playAuthorBtn) {
@@ -2110,7 +2237,7 @@
         const ids = [...author.tracks].sort((a, b) => compareTextValues(a.title, b.title)).map((t) => t.id);
         setQueue(ids, 0, 'author', author.id);
         openPlayer();
-        await startPlayback();
+        startPlayback();
       });
     }
 
@@ -2122,7 +2249,7 @@
         fisherYates(ids);
         setQueue(ids, 0, 'author', author.id);
         openPlayer();
-        await startPlayback();
+        startPlayback();
       });
     }
 
@@ -2161,6 +2288,7 @@
     });
     els.seekSlider.addEventListener('change', () => {
       seekDragging = false;
+      updateMediaSessionPosition();
     });
 
     els.volumeSlider.addEventListener('input', () => {
@@ -2186,19 +2314,23 @@
     els.midSlider.addEventListener('input', applyEQ);
     els.trebleSlider.addEventListener('input', applyEQ);
 
-    // Removed the buggy renderMiniPlayer call from timeupdate
     els.audio.addEventListener('timeupdate', () => {
       if (!seekDragging) updateTimeUi();
     });
-    els.audio.addEventListener('loadedmetadata', () => updateTimeUi());
+    els.audio.addEventListener('loadedmetadata', () => {
+      updateTimeUi();
+      updateMediaSessionPosition();
+    });
     els.audio.addEventListener('ended', () => { goNext(); updateMediaSession(); });
     els.audio.addEventListener('play', () => {
       renderMiniPlayer();
       updateMediaSession();
+      updateMediaSessionPosition();
     });
     els.audio.addEventListener('pause', () => {
       renderMiniPlayer();
       updateMediaSession();
+      updateMediaSessionPosition();
     });
     els.audio.addEventListener('error', () => toast('Could not play this file'));
 
@@ -2236,7 +2368,7 @@
     });
 
     bindSwipe();
-    els.queueList.addEventListener('dragover', (e) => e.preventDefault());
+    bindTouchQueueDrag();
   }
 
   function bindSwipe() {
@@ -2267,7 +2399,9 @@
     }, { passive: true });
   }
 
+  // Desktop HTML5 drag fallback
   function onQueueDragStart(e) {
+    if (e.pointerType === 'touch') return; 
     queueDraggingId = e.currentTarget.dataset.trackId;
     e.currentTarget.classList.add('dragging');
     e.dataTransfer.effectAllowed = 'move';
