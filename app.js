@@ -1998,7 +1998,23 @@
       
       navigator.mediaSession.playbackState = els.audio.paused ? 'paused' : 'playing';
       
-      navigator.mediaSession.setActionHandler('play', () => togglePlayPause());
+      navigator.mediaSession.setActionHandler('play', () => {
+        // 1. Instantly wake up the Web Audio API context if it's suspended
+        if (audioCtx && audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+        
+        // 2. Play the audio element immediately in the exact same synchronous block
+        els.audio.play().then(() => {
+          // 3. Update the UI state only AFTER a successful play trigger
+          renderMiniPlayer();
+          updateMediaSession();
+          updateMediaSessionPosition();
+        }).catch(err => {
+          console.warn("Background resume blocked by iOS:", err);
+          togglePlayPause(); // Fallback to standard flow
+        });
+      });
       navigator.mediaSession.setActionHandler('pause', () => togglePlayPause());
       navigator.mediaSession.setActionHandler('previoustrack', () => goPrev());
       navigator.mediaSession.setActionHandler('nexttrack', () => goNext());
