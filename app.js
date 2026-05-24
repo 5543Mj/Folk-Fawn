@@ -1980,67 +1980,42 @@
     if (els.absVolumeReadout) els.absVolumeReadout.textContent = `${value.toFixed(1)}×`;
   }
 
-  function updateMediaSession(track = findTrack(state.currentTrackId)) {
+  function updateMediaSession(track) {
     if (!('mediaSession' in navigator)) return;
-    try {
-      const cover = track?.coverDataUrl || DEFAULT_ART;
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: track?.title || 'Untitled',
-        artist: track?.artist || 'Unknown Artist',
-        album: track?.album || 'Unknown Album',
-        artwork: [
-          { src: cover, sizes: '96x96', type: 'image/png' },
-          { src: cover, sizes: '128x128', type: 'image/png' },
-          { src: cover, sizes: '192x192', type: 'image/png' },
-          { src: cover, sizes: '256x256', type: 'image/png' },
-          { src: cover, sizes: '384x384', type: 'image/png' },
-        ],
-      });
-      
-      navigator.mediaSession.playbackState = els.audio.paused ? 'paused' : 'playing';
-      
-      navigator.mediaSession.setActionHandler('play', () => {
-        // 1. Instantly wake up the Web Audio API context if it's suspended
-        if (audioCtx && audioCtx.state === 'suspended') {
-          audioCtx.resume();
-        }
-        
-        // 2. Play the audio element immediately in the exact same synchronous block
-        els.audio.play().then(() => {
-          // 3. Update the UI state only AFTER a successful play trigger
-          renderMiniPlayer();
-          updateMediaSession();
-          updateMediaSessionPosition();
-        }).catch(err => {
-          console.warn("Background resume blocked by iOS:", err);
-          togglePlayPause(); // Fallback to standard flow
-        });
-      });
-      navigator.mediaSession.setActionHandler('pause', () => togglePlayPause());
-      navigator.mediaSession.setActionHandler('previoustrack', () => goPrev());
-      navigator.mediaSession.setActionHandler('nexttrack', () => goNext());
-      
-      navigator.mediaSession.setActionHandler('seekbackward', () => { 
-        els.audio.currentTime = Math.max(0, els.audio.currentTime - 10); 
-        updateMediaSessionPosition(); 
-      });
-      navigator.mediaSession.setActionHandler('seekforward', () => { 
-        els.audio.currentTime = Math.min(els.audio.duration || 0, els.audio.currentTime + 10); 
-        updateMediaSessionPosition(); 
-      });
-      
-      navigator.mediaSession.setActionHandler('seekto', (details) => {
-        if (details.fastSeek && 'fastSeek' in els.audio) {
-          els.audio.fastSeek(details.seekTime);
-          return;
-        }
-        els.audio.currentTime = details.seekTime;
-        updateMediaSessionPosition();
-      });
 
-    } catch (err) {
-      console.warn('Media session update failed', err);
-    }
+    // 1. Set Metadata
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: track.title || 'Unknown Title',
+      artist: track.artist || 'Unknown Artist',
+      album: track.album || '',
+      artwork: [
+        { src: 'img/lier-192.png', sizes: '192x192', type: 'image/png' }
+      ]
+    });
+
+    // 2. Set State
+    navigator.mediaSession.playbackState = els.audio.paused ? 'paused' : 'playing';
+
+    // 3. FORCE-BIND HANDLERS (The Fix)
+    // We bind these immediately here so they are fresh for the OS
+    navigator.mediaSession.setActionHandler('play', () => {
+      // Must be purely synchronous to avoid OS rejection
+      if (els.audio.paused) {
+        els.audio.play().catch(e => console.warn(e));
+        // Only trigger the visual updates, keep audio logic out of the way
+        navigator.mediaSession.playbackState = 'playing';
+      }
+    });
+
+    navigator.mediaSession.setActionHandler('pause', () => {
+      // Must be purely synchronous
+      els.audio.pause();
+      navigator.mediaSession.playbackState = 'paused';
+    });
+    
+    // Optional: handle next/prev if you have them
+    navigator.mediaSession.setActionHandler('previoustrack', goPrev);
+    navigator.mediaSession.setActionHandler('nexttrack', goNext);
   }
 
   function openAlbumFromSong(trackId) {
