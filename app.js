@@ -29,7 +29,7 @@
   const ABS_VOLUME_MIN = 0.10;
   const ABS_VOLUME_MAX = 10;
   const ABS_VOLUME_STEP = 0.1;
-  const MASTER_VOLUME_CAP = 0.5;
+  const MASTER_VOLUME_CAP = 0.3;
 
   const els = {
     tabbar: $('#tabbar'),
@@ -1277,10 +1277,14 @@
     const vol = Number(els.volumeSlider.value) / 100;
     const output = clamp(vol * norm * songVol, 0, MASTER_VOLUME_CAP);
 
-    if (state.directAudioMode || !gainNode) {
+    if (state.directAudioMode) {
+      // iOS doesn't support gainNodes reliably, so we use the media element
       els.audio.volume = output;
     } else {
-      gainNode.gain.value = output;
+      // Desktop Mac: Pin the media element to 100% so it stops hijacking system volume.
+      // Use the GainNode to handle the app's internal volume slider.
+      els.audio.volume = 0.25;
+      if (gainNode) gainNode.gain.value = output;
     }
 
     els.volReadout.textContent = `${Math.round(Number(els.volumeSlider.value))}%${(state.autoNormalize && norm !== 1 && !state.directAudioMode) ? ` · EQ ${norm.toFixed(2)}×` : ''}`;
@@ -1442,29 +1446,29 @@
   function goNext() {
     if (!state.queue.length) return;
 
-    const finishedIndex = clamp(state.currentIndex, 0, Math.max(0, state.queue.length - 1));
-    const nextIndex = finishedIndex + 1;
+    // Move to the next index without splicing the array
+    const nextIndex = state.currentIndex + 1;
     const nextTrackId = state.queue[nextIndex];
 
     if (nextTrackId) {
-      state.queue.splice(finishedIndex, 1);
-      state.currentIndex = Math.min(finishedIndex, state.queue.length - 1);
-      state.currentTrackId = state.queue[state.currentIndex] || nextTrackId;
+      state.currentIndex = nextIndex;
+      state.currentTrackId = nextTrackId;
       renderAll();
       startPlayback();
       return;
     }
 
+    // Handle Album Looping
     if (state.repeatAlbum && state.currentAlbumId) {
       const album = groupAlbums().find((a) => a.id === state.currentAlbumId);
       if (!album) return;
       const ids = album.tracks.map((t) => t.id);
       setQueue(ids, 0, 'album', state.currentAlbumId);
-      renderAll();
       startPlayback();
       return;
     }
 
+    // End of queue
     els.audio.pause();
     state.currentTrackId = null;
     state.currentIndex = -1;
