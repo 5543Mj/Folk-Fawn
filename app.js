@@ -124,6 +124,8 @@
   let queueDragOverId = null;
   const listObservers = new Map();
   const marqueeElements = new Set();
+  let fakePauseTime = 0;
+  let isFakePaused = false;
 
   const DEFAULT_ART = svgDataUri(`
     <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
@@ -810,8 +812,9 @@
     applyScrollingText(els.miniTitle, track.title || 'Untitled', { measure: true });
     applyScrollingText(els.miniArtist, `${track.artist || 'Unknown Artist'} · ${track.album || 'Unknown Album'}`, { measure: true });
     
-    els.miniPlayBtn.textContent = els.audio.paused ? '▶' : '=';
-    els.miniPlayBtn.classList.toggle('paused-glyph', !els.audio.paused);
+    const isEffectivelyPaused = els.audio.paused || isFakePaused;
+    els.miniPlayBtn.textContent = isEffectivelyPaused ? '▶' : '=';
+    els.miniPlayBtn.classList.toggle('paused-glyph', !isEffectivelyPaused);
   }
 
   function updatePlayerView() {
@@ -855,6 +858,8 @@
   }
 
   function updateTimeUi() {
+    if (isFakePaused) return; // Keep UI frozen at the pause time
+    
     const duration = els.audio.duration || 0;
     const current = els.audio.currentTime || 0;
     els.timeNow.textContent = formatTime(current);
@@ -864,6 +869,18 @@
 
   function updateMediaSessionPosition() {
     if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
+    
+    if (isFakePaused) {
+      const track = findTrack(state.currentTrackId);
+      const duration = track?.duration || 0;
+      if (duration > 0 && fakePauseTime >= 0 && fakePauseTime <= duration) {
+        try {
+          navigator.mediaSession.setPositionState({ duration, playbackRate: 1, position: fakePauseTime });
+        } catch(e){}
+      }
+      return;
+    }
+
     const duration = els.audio.duration || 0;
     const playbackRate = els.audio.playbackRate || 1;
     const position = els.audio.currentTime || 0;
@@ -1119,6 +1136,9 @@
     const track = findTrack(state.currentTrackId);
     if (!track) return;
 
+    isFakePaused = false;
+    els.audio.loop = false;
+
     // 1. Update MediaSession FIRST. 
     // This tricks iOS into thinking a system-level media change is occurring, 
     // helping to keep the background JavaScript thread awake longer.
@@ -1295,17 +1315,67 @@
       openPlayer();
       return;
     }
-    if (els.audio.paused) {
-      if (!els.audio.src || state.currentTrackId && els.audio.src === '') {
+    
+    if (els.audio.paused || isFakePaused) {
+      // PLAY: Resume from Fake Pause or normal paused state
+      if (!isFakePaused && (!els.audio.src || els.audio.src === '')) {
         startPlayback();
-      } else {
-        if (!state.directAudioMode && audioCtx && audioCtx.state === 'suspended') {
-          audioCtx.resume();
-        }
-        els.audio.play().catch(() => startPlayback());
+        return;
       }
+      
+      const track = findTrack(state.currentTrackId);
+      if (!track) return;
+      
+      isFakePaused = false;
+      els.audio.loop = false;
+      
+      // Re-create the object URL to bypass the iOS background GC bug
+      const newObjectUrl = URL.createObjectURL(track.file);
+      els.audio.src = newObjectUrl;
+      els.audio.currentTime = fakePauseTime;
+      
+      if (!state.directAudioMode && audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      
+      els.audio.play().then(() => {
+        if (currentObjectUrl) {
+           setTimeout(() => URL.revokeObjectURL(currentObjectUrl), 2000);
+        }
+        currentObjectUrl = newObjectUrl;
+        syncAudioVolume();
+        renderMiniPlayer();
+        updateMediaSession();
+        updateMediaSessionPosition();
+      }).catch(err => {
+        console.warn('Playback blocked', err);
+        startPlayback(); // fallback
+      });
+      
     } else {
-      els.audio.pause();
+      // PAUSE: Engage Fake Pause with silent audio
+      isFakePaused = true;
+      fakePauseTime = els.audio.currentTime;
+      
+      // A tiny valid base64 WAV file
+      const silentWav = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
+      els.audio.src = silentWav;
+      els.audio.loop = true;
+      
+      els.audio.play().catch(() => {
+        // Fallback if the silent audio fails for any reason
+        els.audio.pause();
+      });
+      
+      // Free up the real track's memory so iOS doesn't randomly kill the app
+      if (currentObjectUrl) {
+        URL.revokeObjectURL(currentObjectUrl);
+        currentObjectUrl = null;
+      }
+
+      renderMiniPlayer();
+      updateMediaSession();
+      updateMediaSessionPosition();
     }
   }
 
@@ -1996,45 +2066,54 @@
         ],
       });
       
-      navigator.mediaSession.playbackState = els.audio.paused ? 'paused' : 'playing';
+      const isEffectivelyPaused = els.audio.paused || isFakePaused;
+      navigator.mediaSession.playbackState = isEffectivelyPaused ? 'paused' : 'playing';
       
       navigator.mediaSession.setActionHandler('play', () => {
-        // 1. Instantly wake up the Web Audio API context if it's suspended
-        if (audioCtx && audioCtx.state === 'suspended') {
-          audioCtx.resume();
-        }
-        
-        // 2. Play the audio element immediately in the exact same synchronous block
-        els.audio.play().then(() => {
-          // 3. Update the UI state only AFTER a successful play trigger
-          renderMiniPlayer();
-          updateMediaSession();
-          updateMediaSessionPosition();
-        }).catch(err => {
-          console.warn("Background resume blocked by iOS:", err);
-          togglePlayPause(); // Fallback to standard flow
-        });
+        if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+        if (els.audio.paused || isFakePaused) togglePlayPause();
       });
-      navigator.mediaSession.setActionHandler('pause', () => togglePlayPause());
+      
+      navigator.mediaSession.setActionHandler('pause', () => {
+        if (!els.audio.paused && !isFakePaused) togglePlayPause();
+      });
+      
       navigator.mediaSession.setActionHandler('previoustrack', () => goPrev());
       navigator.mediaSession.setActionHandler('nexttrack', () => goNext());
       
       navigator.mediaSession.setActionHandler('seekbackward', () => { 
-        els.audio.currentTime = Math.max(0, els.audio.currentTime - 10); 
-        updateMediaSessionPosition(); 
+        if (isFakePaused) {
+          fakePauseTime = Math.max(0, fakePauseTime - 10);
+          updateMediaSessionPosition();
+        } else {
+          els.audio.currentTime = Math.max(0, els.audio.currentTime - 10); 
+          updateMediaSessionPosition(); 
+        }
       });
+      
       navigator.mediaSession.setActionHandler('seekforward', () => { 
-        els.audio.currentTime = Math.min(els.audio.duration || 0, els.audio.currentTime + 10); 
-        updateMediaSessionPosition(); 
+        const duration = isFakePaused ? (track?.duration || 0) : (els.audio.duration || 0);
+        if (isFakePaused) {
+          fakePauseTime = Math.min(duration, fakePauseTime + 10);
+          updateMediaSessionPosition();
+        } else {
+          els.audio.currentTime = Math.min(duration, els.audio.currentTime + 10); 
+          updateMediaSessionPosition(); 
+        }
       });
       
       navigator.mediaSession.setActionHandler('seekto', (details) => {
-        if (details.fastSeek && 'fastSeek' in els.audio) {
-          els.audio.fastSeek(details.seekTime);
-          return;
+        if (isFakePaused) {
+          fakePauseTime = details.seekTime;
+          updateMediaSessionPosition();
+        } else {
+          if (details.fastSeek && 'fastSeek' in els.audio) {
+            els.audio.fastSeek(details.seekTime);
+            return;
+          }
+          els.audio.currentTime = details.seekTime;
+          updateMediaSessionPosition();
         }
-        els.audio.currentTime = details.seekTime;
-        updateMediaSessionPosition();
       });
 
     } catch (err) {
@@ -2306,12 +2385,20 @@
 
     els.seekSlider.addEventListener('input', () => {
       seekDragging = true;
-      const duration = els.audio.duration || 0;
+      const track = findTrack(state.currentTrackId);
+      const duration = isFakePaused ? (track?.duration || 0) : (els.audio.duration || 0);
+      
       if (duration) {
-        els.audio.currentTime = (Number(els.seekSlider.value) / 1000) * duration;
-        updateTimeUi();
+        if (isFakePaused) {
+          fakePauseTime = (Number(els.seekSlider.value) / 1000) * duration;
+          els.timeNow.textContent = formatTime(fakePauseTime);
+        } else {
+          els.audio.currentTime = (Number(els.seekSlider.value) / 1000) * duration;
+          updateTimeUi();
+        }
       }
     });
+    
     els.seekSlider.addEventListener('change', () => {
       seekDragging = false;
       updateMediaSessionPosition();
@@ -2341,11 +2428,13 @@
     els.trebleSlider.addEventListener('input', applyEQ);
 
     els.audio.addEventListener('timeupdate', () => {
-      if (!seekDragging) updateTimeUi();
+      if (!seekDragging && !isFakePaused) updateTimeUi();
     });
     els.audio.addEventListener('loadedmetadata', () => {
-      updateTimeUi();
-      updateMediaSessionPosition();
+      if (!isFakePaused) {
+        updateTimeUi();
+        updateMediaSessionPosition();
+      }
     });
     els.audio.addEventListener('ended', () => { goNext(); updateMediaSession(); });
     els.audio.addEventListener('play', () => {
@@ -2371,8 +2460,8 @@
 
     if (navigator.mediaDevices?.addEventListener) {
       navigator.mediaDevices.addEventListener('devicechange', () => {
-        if (state.currentTrackId && !els.audio.paused) {
-          els.audio.pause();
+        if (state.currentTrackId && !els.audio.paused && !isFakePaused) {
+          togglePlayPause();
           toast('Playback paused after an audio device change');
         }
       });
