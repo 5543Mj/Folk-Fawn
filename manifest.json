@@ -9,13 +9,13 @@
   "theme_color": "#111111",
   "icons": [
     {
-      "src": "img/lier-192.png",
+      "src": "media/lier-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "img/lier-512.png",
+      "src": "media/lier-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
