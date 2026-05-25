@@ -152,12 +152,11 @@
 
       <section id="playerView" class="view player-view">
         <button class="back-btn" id="playerBackBtn">← Back</button>
-
+        <button id="CloseBtn" class="close-btn" title="Close Player">×</button>
         <div class="player-actions-left">
           <button class="ghost-btn" id="reshuffleBtn">Reshuffle</button>
           <button class="ghost-btn" id="loopAlbumBtn">Loop</button>
         </div>
-
         <div class="now-playing-card">
           <img id="playerArt" class="hero-art large" alt="Now playing cover" />
           <div class="now-meta">
@@ -167,7 +166,6 @@
             <p class="subtle" id="playerAlbum"></p>
           </div>
         </div>
-
         <div class="slider-block">
           <div class="slider-labels"><span id="timeNow">0:00</span><span id="timeEnd">0:00</span></div>
           <input id="seekSlider" type="range" min="0" max="1000" value="0" />
