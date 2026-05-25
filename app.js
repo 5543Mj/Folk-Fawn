@@ -1362,7 +1362,7 @@
       fakePauseTime = els.audio.currentTime;
       
       // Reference a tiny physical MP3 file you keep in your project folder
-      els.audio.src = 'silence.mp3'; 
+      els.audio.src = 'media/silence.mp3'; 
       els.audio.loop = true;
       
       els.audio.play().catch(() => {
