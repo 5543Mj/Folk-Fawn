@@ -2442,7 +2442,16 @@
         updateMediaSessionPosition();
       }
     });
-    els.audio.addEventListener('ended', () => { goNext(); updateMediaSession(); });
+    els.audio.addEventListener('ended', () => {
+      // 1. Immediately feed iOS the physical file to keep the audio session alive in the background
+      els.audio.src = 'media/silence.mp3';
+      els.audio.play().catch(() => {}); // Catch safely in case we are in the foreground
+
+      // 2. Wait a tiny fraction of a second, then load the next track
+      setTimeout(() => {
+        goNext();
+      }, 50); 
+    });
     els.audio.addEventListener('play', () => {
       renderMiniPlayer();
       updateMediaSession();
@@ -2595,6 +2604,27 @@
       setImage(els.miniArt, fallbackCover());
     }
   }
+
+  const miniCloseBtn = $('#miniCloseBtn'); // Add to your 'els' object if you use one
+
+  CloseBtn.addEventListener('click', (e) => {
+    e.stopPropagation(); // Prevents the click from opening the full-screen player
+    
+    els.audio.pause();
+    els.audio.currentTime = 0;
+    
+    // Clear out the state
+    state.currentTrackId = null;
+    state.currentIndex = -1;
+    
+    // Hide the UI
+    els.miniPlayer.classList.add('hidden');
+    
+    // Optional: Clear out the media session so the lock screen clears
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = null;
+    }
+  });
 
   function loadFolderHintText() {
     if (state.folderHandle) els.folderNote.textContent = 'Last selected folder is remembered. Tap “Choose Music Folder” to rescan it.';
