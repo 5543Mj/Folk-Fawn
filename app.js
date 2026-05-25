@@ -1332,7 +1332,11 @@
       // Re-create the object URL to bypass the iOS background GC bug
       const newObjectUrl = URL.createObjectURL(track.file);
       els.audio.src = newObjectUrl;
-      els.audio.currentTime = fakePauseTime;
+
+      // Wait for Safari to load the track metadata before scrubbing
+      els.audio.addEventListener('loadedmetadata', function resumeTime() {
+        els.audio.currentTime = fakePauseTime;
+      }, { once: true });
       
       if (!state.directAudioMode && audioCtx && audioCtx.state === 'suspended') {
         audioCtx.resume();
@@ -1357,13 +1361,11 @@
       isFakePaused = true;
       fakePauseTime = els.audio.currentTime;
       
-      // A tiny valid base64 WAV file
-      const silentWav = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
-      els.audio.src = silentWav;
+      // Reference a tiny physical MP3 file you keep in your project folder
+      els.audio.src = 'silence.mp3'; 
       els.audio.loop = true;
       
       els.audio.play().catch(() => {
-        // Fallback if the silent audio fails for any reason
         els.audio.pause();
       });
       
@@ -2447,7 +2449,10 @@
       updateMediaSession();
       updateMediaSessionPosition();
     });
-    els.audio.addEventListener('error', () => toast('Could not play this file'));
+    els.audio.addEventListener('error', () => {
+      if (isFakePaused) return; // Ignore decoy file errors
+      toast('Could not play this file');
+    });
 
     document.addEventListener('visibilitychange', async () => {
       if (document.hidden) return;
