@@ -66,6 +66,7 @@
         <label class="search-box">
           <span>Search albums</span>
           <input id="albumSearchInput" type="search" placeholder="Album, artist, year" />
+          <button type="button" id="albumClearBtn" class="clear-btn hidden" aria-label="Clear search">✕</button>
         </label>
         <div class="album-grid" id="albumsGrid"></div>
       </section>
@@ -79,6 +80,7 @@
         <label class="search-box">
           <span>Search artists</span>
           <input id="authorSearchInput" type="search" placeholder="Artist name" />
+          <button type="button" id="authorClearBtn" class="clear-btn hidden" aria-label="Clear search">✕</button>
         </label>
         <div class="album-grid" id="authorsGrid"></div>
       </section>
@@ -121,6 +123,7 @@
         <label class="search-box">
           <span>Search songs</span>
           <input id="searchInput" type="search" placeholder="Title, artist, album, year" />
+          <button type="button" id="searchClearBtn" class="clear-btn hidden" aria-label="Clear search">✕</button>
         </label>
 
         <div class="import-note" id="folderNote">No folder selected yet.</div>
