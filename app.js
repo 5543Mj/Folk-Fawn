@@ -896,7 +896,7 @@
     const removeBtn = showRemove ? '<button class="icon-btn queue-remove remove-track" title="Skip song">–</button>' : '';
     return `
       <article class="song-row ${current ? 'current' : ''}" data-track-id="${escapeAttr(track.id)}">
-        <img class="song-cover" loading="lazy" src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
+        <img class="song-cover" loading="lazy" decoding="async" src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
         <div class="song-meta">
           <div class="song-title">${escapeHtml(track.title || track.fileName || 'Untitled')}</div>
           <div class="song-artist">${escapeHtml(track.artist || 'Unknown Artist')}</div>
@@ -913,7 +913,7 @@
     const sub = isAuthor ? `${data.albumCount} album${data.albumCount === 1 ? '' : 's'}` : data.artist || 'Unknown Artist';
     return `
       <article class="album-card" data-album-id="${escapeAttr(data.id)}">
-        <img loading="lazy" src="${escapeAttr(albumCoverFor(data))}" alt="${escapeHtml(title)}" />
+        <img loading="lazy" decoding="async" src="${escapeAttr(albumCoverFor(data))}" alt="${escapeHtml(title)}" />
         <div class="album-meta">
           <div class="album-title scrolling-text-source" data-scroll-text="${escapeAttr(title)}">${escapeHtml(title)}</div>
           <div class="album-sub scrolling-text-source" data-scroll-text="${escapeAttr(sub)}">${escapeHtml(sub)}</div>
@@ -925,7 +925,7 @@
     return `
       <article class="queue-row" data-track-id="${escapeAttr(track.id)}">
         <div class="queue-handle" title="Drag to reorder">⋮⋮</div>
-        <img class="queue-cover" loading="lazy" src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
+        <img class="queue-cover" loading="lazy" decoding="async" src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
         <div class="queue-meta">
           <div class="queue-title">${escapeHtml(track.title || track.fileName || 'Untitled')}</div>
           <div class="queue-sub">${escapeHtml(track.artist || 'Unknown Artist')} · ${escapeHtml(normalizeAlbumLabel(track.album) || 'Singles')}</div>
@@ -2018,12 +2018,14 @@
   }
 
   function renderAll() {
-    renderSongs();
-    renderAlbums();
-    renderAuthors();
-    renderSearchResults();
+    // Only process and render the tab currently visible to the user
+    if (state.activeTab === 'songs') renderSongs();
+    if (state.activeTab === 'albums') renderAlbums();
+    if (state.activeTab === 'authors') renderAuthors();
+    if (state.activeTab === 'search') renderSearchResults();
+    
     renderMiniPlayer();
-    renderQueue();
+    renderQueue(); 
     updateSortButtonText();
     updateMasterGain();
     refreshScrollingTexts();
@@ -2300,24 +2302,25 @@
       els.folderInput.value = '';
     });
 
-    els.searchInput.addEventListener('input', () => {
-      state.searchQuery = els.searchInput.value;
-      renderSearchResults();
-    });
-
-    if (els.albumSearchInput) {
-      els.albumSearchInput.addEventListener('input', () => {
-        state.albumSearchQuery = els.albumSearchInput.value;
-        renderAlbums();
+    const setupSearch = (inputEl, clearBtnEl, searchStateKey, renderFn) => {
+      if (!inputEl || !clearBtnEl) return;
+      inputEl.addEventListener('input', () => {
+        state[searchStateKey] = inputEl.value;
+        clearBtnEl.classList.toggle('hidden', inputEl.value.length === 0);
+        renderFn();
       });
-    }
-
-    if (els.authorSearchInput) {
-      els.authorSearchInput.addEventListener('input', () => {
-        state.authorSearchQuery = els.authorSearchInput.value;
-        renderAuthors();
+      clearBtnEl.addEventListener('click', () => {
+        inputEl.value = '';
+        state[searchStateKey] = '';
+        clearBtnEl.classList.add('hidden');
+        renderFn();
+        inputEl.focus(); // Keep mobile keyboard open
       });
-    }
+    };
+
+    setupSearch(els.searchInput, els.searchClearBtn, 'searchQuery', renderSearchResults);
+    setupSearch(els.albumSearchInput, els.albumClearBtn, 'albumSearchQuery', renderAlbums);
+    setupSearch(els.authorSearchInput, els.authorClearBtn, 'authorSearchQuery', renderAuthors);
 
     els.albumBackBtn.addEventListener('click', () => displayTab('albums'));
     if (els.authorBackBtn) els.authorBackBtn.addEventListener('click', () => displayTab('authors'));
@@ -2443,14 +2446,15 @@
       }
     });
     els.audio.addEventListener('ended', () => {
-      // 1. Immediately feed iOS the physical file to keep the audio session alive in the background
+      // 1. Immediately feed iOS the physical file to keep the audio session alive
       els.audio.src = 'media/silence.mp3';
-      els.audio.play().catch(() => {}); // Catch safely in case we are in the foreground
+      els.audio.loop = true; // FORCE LOOP in case the device is lagging
+      els.audio.play().catch(() => {}); 
 
-      // 2. Wait a tiny fraction of a second, then load the next track
+      // 2. Increase the delay slightly to guarantee iOS registers the playing state
       setTimeout(() => {
         goNext();
-      }, 50); 
+      }, 150); 
     });
     els.audio.addEventListener('play', () => {
       renderMiniPlayer();
@@ -2500,36 +2504,7 @@
       }
     });
 
-    bindSwipe();
     bindTouchQueueDrag();
-  }
-
-  function bindSwipe() {
-    let startX = 0;
-    let startY = 0;
-    let active = false;
-    const threshold = 60;
-
-    document.addEventListener('touchstart', (e) => {
-      if (e.target.closest('.queue-row') || e.target.closest('input') || e.target.closest('button') || e.target.closest('details')) return;
-      const t = e.changedTouches[0];
-      startX = t.clientX;
-      startY = t.clientY;
-      active = true;
-    }, { passive: true });
-
-    document.addEventListener('touchend', (e) => {
-      if (!active) return;
-      const t = e.changedTouches[0];
-      const dx = t.clientX - startX;
-      const dy = t.clientY - startY;
-      active = false;
-      if (Math.abs(dx) < threshold || Math.abs(dx) < Math.abs(dy)) return;
-      const order = ['songs', 'albums', 'authors', 'search'];
-      const idx = order.indexOf(state.activeTab);
-      if (dx < 0 && idx < order.length - 1) displayTab(order[idx + 1]);
-      if (dx > 0 && idx > 0) displayTab(order[idx - 1]);
-    }, { passive: true });
   }
 
   // Desktop HTML5 drag fallback
