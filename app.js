@@ -30,6 +30,7 @@
   const ABS_VOLUME_MAX = 10;
   const ABS_VOLUME_STEP = 0.1;
   const MASTER_VOLUME_CAP = 0.3;
+  const APP_CACHE_NAME = 'folk-fawn-shell-v1';
 
   const els = {
     tabbar: $('#tabbar'),
@@ -126,6 +127,8 @@
   const marqueeElements = new Set();
   let fakePauseTime = 0;
   let isFakePaused = false;
+  let preloadedNextUrl = null;
+  let preloadedNextId = null;
 
   const DEFAULT_ART = svgDataUri(`
     <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
@@ -624,6 +627,19 @@
     setTimeout(checkMarquees, 10);
   }
 
+  const imageObserver = new IntersectionObserver((entries, observer) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const img = entry.target;
+        if (img.dataset.src) {
+          img.src = img.dataset.src;
+          img.removeAttribute('data-src');
+          observer.unobserve(img); // Stop tracking once loaded
+        }
+      }
+    });
+  }, { rootMargin: '200px' }); // Load them slightly before they scroll into view
+
   function renderLazyList(container, items, renderHtmlFn, bindNodesFn, emptyText) {
     if (!container) return;
     if (listObservers.has(container)) {
@@ -707,6 +723,8 @@
       (album) => albumCardHTML(album),
       (nodes) => {
         nodes.forEach((card) => {
+          const img = card.querySelector('img[data-src]');
+          if (img) imageObserver.observe(img);
           card.addEventListener('click', () => openAlbum(card.dataset.albumId));
           refreshScrollingTexts(card);
         });
@@ -725,7 +743,9 @@
       (author) => albumCardHTML(author, true),
       (nodes) => {
         nodes.forEach((card) => {
-          card.addEventListener('click', () => openAuthor(card.dataset.albumId));
+          const img = card.querySelector('img[data-src]');
+          if (img) imageObserver.observe(img);
+          card.addEventListener('click', () => openAlbum(card.dataset.albumId));
           refreshScrollingTexts(card);
         });
       },
@@ -779,6 +799,11 @@
       (t, idx) => queueRowHTML(t, idx), 
       (nodes) => {
         nodes.forEach((row) => {
+          
+          // ✅ ADD THESE TWO LINES: Tell the observer to watch the queue images
+          const img = row.querySelector('img[data-src]');
+          if (img) imageObserver.observe(img);
+
           row.draggable = true;
           row.addEventListener('dragstart', onQueueDragStart);
           row.addEventListener('dragover', onQueueDragOver);
@@ -896,7 +921,7 @@
     const removeBtn = showRemove ? '<button class="icon-btn queue-remove remove-track" title="Skip song">–</button>' : '';
     return `
       <article class="song-row ${current ? 'current' : ''}" data-track-id="${escapeAttr(track.id)}">
-        <img class="song-cover" loading="lazy" decoding="async" src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
+          <img class="song-cover" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" data-src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
         <div class="song-meta">
           <div class="song-title">${escapeHtml(track.title || track.fileName || 'Untitled')}</div>
           <div class="song-artist">${escapeHtml(track.artist || 'Unknown Artist')}</div>
@@ -913,7 +938,7 @@
     const sub = isAuthor ? `${data.albumCount} album${data.albumCount === 1 ? '' : 's'}` : data.artist || 'Unknown Artist';
     return `
       <article class="album-card" data-album-id="${escapeAttr(data.id)}">
-        <img loading="lazy" decoding="async" src="${escapeAttr(albumCoverFor(data))}" alt="${escapeHtml(title)}" />
+          <img src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" data-src="${escapeAttr(albumCoverFor(data))}" alt="${escapeHtml(title)}" />
         <div class="album-meta">
           <div class="album-title scrolling-text-source" data-scroll-text="${escapeAttr(title)}">${escapeHtml(title)}</div>
           <div class="album-sub scrolling-text-source" data-scroll-text="${escapeAttr(sub)}">${escapeHtml(sub)}</div>
@@ -925,7 +950,7 @@
     return `
       <article class="queue-row" data-track-id="${escapeAttr(track.id)}">
         <div class="queue-handle" title="Drag to reorder">⋮⋮</div>
-        <img class="queue-cover" loading="lazy" decoding="async" src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
+          <img class="song-cover" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" data-src="${escapeAttr(track.coverDataUrl || fallbackCover(track.title?.[0] || '♪'))}" alt="" />
         <div class="queue-meta">
           <div class="queue-title">${escapeHtml(track.title || track.fileName || 'Untitled')}</div>
           <div class="queue-sub">${escapeHtml(track.artist || 'Unknown Artist')} · ${escapeHtml(normalizeAlbumLabel(track.album) || 'Singles')}</div>
@@ -992,9 +1017,12 @@
   }
 
   function bindSongRows(nodes, items, albumId = null, { allowRemove = false } = {}) {
+    
     nodes.forEach((row) => {
+      const img = row.querySelector('img[data-src]');
       const id = row.dataset.trackId;
       const song = items.find((t) => t.id === id) || findTrack(id);
+      if (img) imageObserver.observe(img);
       if (!song) return;
 
       row.addEventListener('click', (e) => {
@@ -1144,8 +1172,16 @@
     // helping to keep the background JavaScript thread awake longer.
     updateMediaSession(track);
 
-    // 2. Create the new URL synchronously
-    const newObjectUrl = URL.createObjectURL(track.file);
+    // Consume the preloaded URL if it matches, otherwise build it
+    let newObjectUrl;
+    if (preloadedNextId === track.id && preloadedNextUrl) {
+      newObjectUrl = preloadedNextUrl;
+      preloadedNextUrl = null; // Reset
+      preloadedNextId = null;
+    } else {
+      newObjectUrl = URL.createObjectURL(track.file);
+    }
+    
     els.audio.src = newObjectUrl;
     els.audio.currentTime = 0;
     syncAudioVolume();
@@ -1446,9 +1482,14 @@
   function goNext() {
     if (!state.queue.length) return;
 
-    // Move to the next index without splicing the array
-    const nextIndex = state.currentIndex + 1;
-    const nextTrackId = state.queue[nextIndex];
+    let nextIndex = state.currentIndex + 1;
+    let nextTrackId = state.queue[nextIndex];
+
+    // Universal Looping: If we hit the end and loop is enabled, restart queue
+    if (!nextTrackId && state.repeatAlbum) {
+      nextIndex = 0;
+      nextTrackId = state.queue[nextIndex];
+    }
 
     if (nextTrackId) {
       state.currentIndex = nextIndex;
@@ -1458,17 +1499,7 @@
       return;
     }
 
-    // Handle Album Looping
-    if (state.repeatAlbum && state.currentAlbumId) {
-      const album = groupAlbums().find((a) => a.id === state.currentAlbumId);
-      if (!album) return;
-      const ids = album.tracks.map((t) => t.id);
-      setQueue(ids, 0, 'album', state.currentAlbumId);
-      startPlayback();
-      return;
-    }
-
-    // End of queue
+    // Truly the end of the queue (no loop)
     els.audio.pause();
     state.currentTrackId = null;
     state.currentIndex = -1;
@@ -1899,7 +1930,7 @@
       }
     }
 
-    if (remember) await rememberFolderHint('Files imported from the selected folder.');
+    if (remember) els.folderNote.textContent = 'Files imported from the selected folder.';
     renderAll();
     if (imported.length) {
       toast(`Imported ${imported.length} track${imported.length === 1 ? '' : 's'}${skipped ? ` · skipped ${skipped}` : ''}${failed ? ` · recovered ${failed}` : ''}`);
@@ -1932,51 +1963,41 @@
   }
 
   async function chooseFolder() {
+    // On iOS, keep the click synchronous and let the hidden input open.
+    if (state.directAudioMode) {
+      els.folderInput.value = '';
+      els.folderInput.click();
+      return;
+    }
+
     if ('showDirectoryPicker' in window) {
       try {
-        if (state.folderHandle?.requestPermission) {
-          const perm = await state.folderHandle.requestPermission({ mode: 'read' });
-          if (perm === 'granted') {
-            await rescanSavedFolder();
-            return;
-          }
-        }
         const dir = await window.showDirectoryPicker({ mode: 'read' });
         state.folderHandle = dir;
-        await dbSet('prefs', dir, 'musicFolderHandle');
-        await rescanSavedFolder();
+        await importFiles(await scanDirectoryHandle(dir), { remember: true });
+        els.folderNote.textContent = 'Loaded files from the selected folder.';
         return;
       } catch (err) {
         if (err?.name === 'AbortError') return;
         console.warn(err);
       }
     }
+
+    // Fallback: always clear the value first so the same folder can be picked again.
+    state.folderHandle = null;
+    els.folderInput.value = '';
     els.folderInput.click();
   }
 
-  async function rescanSavedFolder() {
-    if (!state.folderHandle) {
-      toast('Pick a music folder first');
-      return;
-    }
-    const files = await scanDirectoryHandle(state.folderHandle);
-    await importFiles(files, { remember: true });
-    els.folderNote.textContent = `Loaded ${files.length} file${files.length === 1 ? '' : 's'} from the selected folder.`;
-  }
-
   async function restoreSavedFolder() {
-    try {
-      const dir = await dbGet('prefs', 'musicFolderHandle');
-      if (dir) {
-        state.folderHandle = dir;
-        els.folderNote.textContent = 'Last selected folder is remembered. Tap “Choose Music Folder” to rescan it.';
-      }
-    } catch {
-      // ignore
-    }
+    // Keep track of the most recently selected folder only for the current session.
+    // We intentionally do not persist directory handles, because they can become
+    // stale across code updates or browser sessions.
+    state.folderHandle = null;
   }
 
   async function loadLibrary() {
+
     try {
       state.library = await dbGetAll('tracks');
       let changed = false;
@@ -2292,7 +2313,10 @@
     });
 
     els.pickFolderBtn.addEventListener('click', chooseFolder);
-    els.importFilesBtn.addEventListener('click', () => els.fileInput.click());
+    els.importFilesBtn.addEventListener('click', () => {
+      els.fileInput.value = '';
+      els.fileInput.click();
+    });
     els.fileInput.addEventListener('change', async () => {
       await importFiles(els.fileInput.files);
       els.fileInput.value = '';
@@ -2438,6 +2462,27 @@
 
     els.audio.addEventListener('timeupdate', () => {
       if (!seekDragging && !isFakePaused) updateTimeUi();
+
+      // PRELOAD HACK: Prepare the next track 15 seconds before this one ends
+      if (!isFakePaused && state.queue.length > 0) {
+        const timeLeft = els.audio.duration - els.audio.currentTime;
+        if (timeLeft < 15 && preloadedNextId !== state.queue[state.currentIndex + 1]) {
+           let nextIndex = state.currentIndex + 1;
+           let nextId = state.queue[nextIndex];
+           
+           // Account for looping
+           if (!nextId && state.repeatAlbum) {
+             nextId = state.queue[0];
+           }
+
+           const nextTrack = nextId ? findTrack(nextId) : null;
+           if (nextTrack) {
+             if (preloadedNextUrl) URL.revokeObjectURL(preloadedNextUrl);
+             preloadedNextUrl = URL.createObjectURL(nextTrack.file);
+             preloadedNextId = nextTrack.id;
+           }
+        }
+      }
     });
     els.audio.addEventListener('loadedmetadata', () => {
       if (!isFakePaused) {
@@ -2580,29 +2625,9 @@
     }
   }
 
-  const miniCloseBtn = $('#miniCloseBtn'); // Add to your 'els' object if you use one
-
-  CloseBtn.addEventListener('click', (e) => {
-    e.stopPropagation(); // Prevents the click from opening the full-screen player
-    
-    els.audio.pause();
-    els.audio.currentTime = 0;
-    
-    // Clear out the state
-    state.currentTrackId = null;
-    state.currentIndex = -1;
-    
-    // Hide the UI
-    els.miniPlayer.classList.add('hidden');
-    
-    // Optional: Clear out the media session so the lock screen clears
-    if ('mediaSession' in navigator) {
-      navigator.mediaSession.metadata = null;
-    }
-  });
-
   function loadFolderHintText() {
-    if (state.folderHandle) els.folderNote.textContent = 'Last selected folder is remembered. Tap “Choose Music Folder” to rescan it.';
+    // Legacy helper retained for compatibility; the app no longer persists
+    // directory handles between sessions.
   }
 
   function getQueueIdsForCurrentView() {
@@ -2629,7 +2654,17 @@
     setImage(els.miniArt, fallbackCover());
   }
 
+  async function registerOfflineShell() {
+    if (!('serviceWorker' in navigator)) return;
+    try {
+      await navigator.serviceWorker.register('./sw.js');
+    } catch (err) {
+      console.warn('Service worker registration failed', err);
+    }
+  }
+
   // Init
+  registerOfflineShell();
   els.audio.preload = 'auto';
   els.audio.playsInline = true;
   els.audio.setAttribute('playsinline', '');
